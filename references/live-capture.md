@@ -21,28 +21,51 @@
 - 스크롤이 긴 화면: 뷰포트 단위로 나눠 캡처하거나(상단=목록 헤더, 하단=버튼 영역),
   풀페이지가 꼭 필요하면 ②를 보조로 쓴다.
 
-### ② Chrome 디버그 포트 + CDP (고품질 대안, 풀페이지 가능)
+### ② Chrome 디버그 포트 + CDP (고품질 대안, 풀페이지·무개입 로그인 가능)
 
 claude-in-chrome이 없거나 풀페이지 캡처가 필요할 때. 사용자의 평소 Chrome 프로필과
-충돌하지 않도록 전용 임시 프로필을 쓴다.
+충돌하지 않도록 **전용 고정 프로필**을 쓴다 — 임시(%TEMP%)가 아닌 고정 경로여야
+로그인 세션 쿠키가 다음 실행까지 유지되어 재로그인 없이 무개입으로 동작한다.
 
 ```powershell
 & "C:\Program Files\Google\Chrome\Application\chrome.exe" `
-  --remote-debugging-port=9222 --user-data-dir="$env:TEMP\chrome-manual-capture" `
-  "http://대상시스템/login"
+  --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\wum-capture-profile" `
+  "http://대상시스템/"
 ```
 
-1. 위 명령으로 Chrome을 띄우고, **사용자가 그 창에서 직접 로그인**하게 한다
-   (비밀번호가 대화에 남지 않는다).
-2. `python scripts/cdp_capture.py --list-tabs --port 9222` 로 연결을 확인한다.
-3. 화면별 캡처:
-   ```
-   python scripts/cdp_capture.py --url "http://대상/admin/users" \
-     --out manual-work/screenshots/SCR-001_user-list.png --full-page --port 9222
-   ```
-   `--wait-selector "table tbody tr"` 로 데이터 로딩을 기다릴 수 있다.
+- `python scripts/cdp_capture.py --list-tabs --port 9222` 로 연결을 확인한다.
+- 화면별 캡처:
+  ```
+  python scripts/cdp_capture.py --url "http://대상/admin/users" \
+    --out manual-work/screenshots/SCR-001_user-list.png --full-page --port 9222
+  ```
+  `--wait-selector "table tbody tr"` 로 데이터 로딩을 기다릴 수 있다.
 - Playwright 미설치면 `pip install playwright`를 제안한다. 기존 Chrome에 연결만 하므로
   `playwright install`(브라우저 다운로드)은 필요 없다.
+
+**로그인은 3단계로 처리된다 (cdp_capture.py 내장, 순서대로 자동 시도):**
+
+| 단계 | 방식 | 개입 |
+|---|---|---|
+| A. 세션 재사용 | 고정 프로필의 기존 로그인 쿠키가 유효하면 그대로 진행 (판정: 보이는 `input[type=password]` 유무) | 없음 |
+| B. 자동 로그인 | 환경변수 `WUM_LOGIN_ID`/`WUM_LOGIN_PW`가 있으면 스크립트가 직접 폼을 채워 로그인 | 없음 |
+| C. 직접 로그인 | A·B 불가 시 종료 코드 3 → 사용자에게 캡처 프로필 Chrome 창에서 직접 로그인 요청 후 재시도 | 1회 |
+
+- B를 쓰려면 실행 전 환경변수를 설정한다. 값이 대화·로그·파일에 남지 않도록
+  **현재 세션 한정** 설정을 기본으로 한다 (사용자가 직접 입력하게 안내):
+  ```powershell
+  $env:WUM_LOGIN_ID = "계정아이디"; $env:WUM_LOGIN_PW = "비밀번호"
+  ```
+  영구 설정(`setx`)은 레지스트리에 평문 저장되므로 사용자가 그 트레이드오프를
+  이해한 경우에만 안내한다.
+- 폼 구조가 표준적이지 않으면 셀렉터를 지정한다:
+  `--login-url <로그인페이지>` `--id-selector "#userId"` `--pw-selector "#userPw"`
+  `--submit-selector "button[type=submit]"` (미지정 시: 보이는 text/email 입력란 +
+  password 입력란 + Enter 제출 휴리스틱)
+- SSO/2FA/캡차가 있는 시스템은 B가 불가하므로 처음부터 C로 안내한다.
+- **보안 주의**: 고정 프로필(`wum-capture-profile`)에는 대상 시스템의 세션 쿠키가
+  저장된다. 공용 PC에서는 쓰지 말고, 작업 종료 후 정리가 필요하면 해당 디렉토리를
+  삭제하면 된다.
 
 ### ③ headless Chrome (로그인 불필요 페이지 전용)
 

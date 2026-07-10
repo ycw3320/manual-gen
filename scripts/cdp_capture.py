@@ -134,8 +134,9 @@ def main():
             browser = p.chromium.connect_over_cdp(f"http://127.0.0.1:{args.port}")
         except Exception as e:
             fail(
-                f"포트 {args.port}에 연결할 수 없습니다. Chrome을 디버그 포트로 실행했는지 확인하세요:\n"
-                f'  chrome.exe --remote-debugging-port={args.port} --user-data-dir="%LOCALAPPDATA%\\wum-capture-profile"\n'
+                f"포트 {args.port}에 연결할 수 없습니다. 캡처 브라우저를 디버그 포트로 실행했는지 확인하세요:\n"
+                f'  <브라우저 실행 파일: chrome.exe / msedge.exe / whale.exe 등> '
+                f'--remote-debugging-port={args.port} --user-data-dir="%LOCALAPPDATA%\\wum-capture-profile"\n'
                 f"(원인: {e})"
             )
 

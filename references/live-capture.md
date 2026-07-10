@@ -9,17 +9,32 @@
 기본 브라우저 설정을 따라가지 않는다 — 매뉴얼의 모든 스크린샷은 **하나의 브라우저로
 통일**되어야 하기 때문이다(브라우저별 폰트·폼 컨트롤 렌더링 차이가 문서 품질을 해친다).
 
-- 우선순위: **Chrome → 없으면 Edge** (둘 다 Chromium 계열이라 CDP·headless 옵션이 동일).
-  탐색 경로:
-  - Chrome: `C:\Program Files\Google\Chrome\Application\chrome.exe` (또는 x86, %LOCALAPPDATA%)
-  - Edge: `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
-- 예외: claude-in-chrome MCP 경로(①)는 **확장이 연결된 브라우저**를 그대로 쓴다
-  (확장은 Edge 등 Chromium 계열에도 설치될 수 있다). 어느 쪽이든 시작 시
-  `manual-work/config.md`에 "캡처 브라우저"를 기록하고 전 과정에서 바꾸지 않는다.
-- 조직/고객이 표준 브라우저를 지정했다면(예: 매뉴얼 표지에 "권장 브라우저" 표기)
-  그 브라우저로 캡처한다 — 독자가 보게 될 화면과 일치해야 하기 때문이다.
-- 아래 ②③의 명령에서 Edge를 쓸 때는 chrome.exe 경로만 msedge.exe로 바꾸면 된다
-  (옵션 동일).
+1. **Chrome 최우선**: 아래 경로 순서로 chrome.exe를 찾고, 있으면 질문 없이 Chrome을 쓴다.
+   - `C:\Program Files\Google\Chrome\Application\chrome.exe`
+   - `C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`
+   - `%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe`
+2. **Chrome이 없거나 실행에 실패하면 — 다른 브라우저로 자동 폴백하지 않는다.**
+   사용자가 의도하지 않은 브라우저로 캡처되는 것을 막기 위해, 아래 표의 경로로 설치된
+   Chromium 계열 브라우저를 탐지한 뒤 **탐지된 것만 선택지로 구성해 AskUserQuestion으로
+   즉시 고르게 한다** (+ "기타: 실행 파일 경로 직접 입력" 옵션).
+
+   | 후보 | 표준 설치 경로 |
+   |---|---|
+   | Edge | `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe` |
+   | Whale | `C:\Program Files\Naver\Naver Whale\Application\whale.exe` |
+   | Brave | `C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe` |
+
+   Chromium 계열은 CDP·headless 옵션이 전부 동일하므로, ②③의 명령에서 실행 파일
+   경로만 선택한 브라우저로 바꾸면 된다. (Firefox는 CDP 미호환 — ④ 창 캡처만 가능)
+3. 확정된 브라우저를 `manual-work/config.md`에 "캡처 브라우저"로 기록하고 전 과정에서
+   바꾸지 않는다. ④ 창 캡처를 쓸 때도 `-WindowTitlePattern`을 그 브라우저에 맞춘다
+   ("Chrome" / "Edge" / "Whale").
+
+- 예외 1: claude-in-chrome MCP 경로(①)는 **확장이 연결된 브라우저**를 그대로 쓴다
+  (확장은 Edge 등 Chromium 계열에도 설치될 수 있다). 연결된 브라우저가 Chrome이 아니면
+  시작 전에 사용자에게 알리고 그대로 진행할지 확인한다.
+- 예외 2: 조직/고객이 표준 브라우저를 지정했다면(예: 매뉴얼 표지의 "권장 브라우저")
+  그 브라우저가 Chrome보다 우선한다 — 독자가 보게 될 화면과 일치해야 하기 때문이다.
 
 ## 1. 캡처 수단 의사결정 트리
 

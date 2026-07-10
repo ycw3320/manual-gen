@@ -10,7 +10,8 @@
 
 - **하이브리드 분석**: 소스 온리 / 라이브 온리 / 둘 다 — 상황에 따라 자동 분기
 - **스택 자동 감지**: Spring·eGovFrame·JSP, React/Next.js, Vue/Nuxt, Django/Rails/Laravel 등
-- **캡처 수단 자동 선택**: claude-in-chrome MCP → Chrome CDP(풀페이지) → headless → OS 창 캡처 폴백
+- **캡처 수단 자동 선택**: claude-in-chrome MCP → CDP(풀페이지) → headless → OS 창 캡처 폴백.
+  브라우저는 **Chrome 최우선**, Chrome 불가 시 설치된 Chromium 계열(Edge/Whale/Brave)을 탐지해 사용자가 즉시 선택
 - **무개입 로그인 3단계**: 고정 프로필 세션 재사용 → 환경변수(`WUM_LOGIN_ID`/`WUM_LOGIN_PW`) 자동 로그인 → 직접 로그인 요청 폴백
 - **번호 배지 합성**: 스크린샷 위 원형 번호 배지 + 번호별 기능 설명 1:1 대응
 - **중단·재개**: `manual-work/inventory.md` 진행 원장 기반 — 세션이 끊겨도 이어서 진행

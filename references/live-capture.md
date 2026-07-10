@@ -4,6 +4,23 @@
 분석용으로 화면을 보는 것과 별개로, **docx/pptx에 넣으려면 반드시 PNG 파일이
 디스크에 있어야 한다**는 점이 이 가이드의 전제다.
 
+## 0. 캡처 브라우저 선택 원칙
+
+기본 브라우저 설정을 따라가지 않는다 — 매뉴얼의 모든 스크린샷은 **하나의 브라우저로
+통일**되어야 하기 때문이다(브라우저별 폰트·폼 컨트롤 렌더링 차이가 문서 품질을 해친다).
+
+- 우선순위: **Chrome → 없으면 Edge** (둘 다 Chromium 계열이라 CDP·headless 옵션이 동일).
+  탐색 경로:
+  - Chrome: `C:\Program Files\Google\Chrome\Application\chrome.exe` (또는 x86, %LOCALAPPDATA%)
+  - Edge: `C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`
+- 예외: claude-in-chrome MCP 경로(①)는 **확장이 연결된 브라우저**를 그대로 쓴다
+  (확장은 Edge 등 Chromium 계열에도 설치될 수 있다). 어느 쪽이든 시작 시
+  `manual-work/config.md`에 "캡처 브라우저"를 기록하고 전 과정에서 바꾸지 않는다.
+- 조직/고객이 표준 브라우저를 지정했다면(예: 매뉴얼 표지에 "권장 브라우저" 표기)
+  그 브라우저로 캡처한다 — 독자가 보게 될 화면과 일치해야 하기 때문이다.
+- 아래 ②③의 명령에서 Edge를 쓸 때는 chrome.exe 경로만 msedge.exe로 바꾸면 된다
+  (옵션 동일).
+
 ## 1. 캡처 수단 의사결정 트리
 
 ①→⑤ 순서로 가용성을 확인하고, 처음 성공하는 수단을 config.md에 기록해 일관되게 쓴다.

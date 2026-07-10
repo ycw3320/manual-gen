@@ -31,7 +31,17 @@ Claude Code에서 자연어로 요청하면 자동 트리거된다:
 
 > "이 프로젝트 분석해서 관리자 매뉴얼 만들어줘. 스크린샷도 넣어서"
 
-수동 호출: `/web-user-manual`
+수동 호출: `/web-user-manual [URL|경로] [키워드...]`
+
+```
+/web-user-manual                                  # 추론 후 일괄 확인 1회 → 진행
+/web-user-manual http://localhost:8080 관리자 docx  # 인자가 인터뷰를 대체
+/web-user-manual http://localhost:8080 auto        # 무정차: 질문 0회로 완주
+```
+
+개입 최소화 설계: 시스템명·URL·독자·출력 형식 등은 최대한 자동 추론하고, 기본 모드는
+**확인 1회**, `auto` 모드는 **질문 0회**(안전 관련 확인만 유지)로 동작한다.
+두 번째 실행부터는 `manual-work/config.md`의 이전 설정을 재사용해 질문이 사라진다.
 
 ## 구성
 

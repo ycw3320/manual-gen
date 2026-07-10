@@ -1,5 +1,5 @@
 ---
-name: web-user-manual
+name: manual-gen
 description: Generate an end-user manual (Word .docx or PowerPoint .pptx) by analyzing a web system's source code and live screens. Auto-detects the tech stack (Spring/JSP, eGovFrame, React, Vue, server-side templates), extracts the screen list from routing and menu structures, and when a running system is available, walks through menus in a browser capturing real screenshots with numbered badge annotations to document per-screen usage (access path, field descriptions, step-by-step procedures). Works with source only or URL only. Use this skill whenever the user asks — in any language, including Korean — to create a user manual, user guide, screen guide, operation guide, admin manual, or usage documentation for a web application or admin system, even if they only say they need a document explaining how to use their system's screens or menus, with or without screenshots.
 metadata:
   description-ko: 웹 시스템의 소스코드와 실행 화면을 분석해 사용자 매뉴얼을 Word(.docx) 또는 PowerPoint(.pptx)로 생성한다. 기술 스택(Spring/JSP, eGovFrame, React, Vue, 서버사이드 템플릿 등)을 자동 감지해 라우팅과 메뉴 구조에서 화면 목록을 추출하고, 실행 중인 시스템이 있으면 브라우저로 메뉴를 순회하며 실제 스크린샷을 캡처하고 번호 배지를 합성해 화면별 사용법(접근 경로, 항목 설명, 조작 절차)을 문서화한다. 소스만 있어도, URL만 있어도 동작한다. 트리거 예 - 사용자 매뉴얼, 사용 설명서, 사용자 가이드, 화면 설명서, 운영자 매뉴얼, 관리자 매뉴얼, 매뉴얼 작성, 시스템 사용법 문서, 화면 캡처해서 문서로 정리.
@@ -11,7 +11,7 @@ metadata:
 `사용자매뉴얼_<시스템명>_<YYYYMMDD>.docx` 및/또는 `.pptx`이며, 모든 중간 산출물은
 대상 프로젝트의 `manual-work/` 아래에서 관리한다.
 
-**슬래시 인자**: `/web-user-manual [URL 또는 소스 경로] [자유 키워드...]`
+**슬래시 인자**: `/manual-gen [URL 또는 소스 경로] [자유 키워드...]`
 — 인자로 받은 값(URL, 경로, "관리자"/"사용자", "docx"/"pptx" 등)은 해당 인터뷰 항목을
 대체한다. 인자에 `auto`(또는 "자동", "질문 없이")가 있으면 아래 무정차 모드로 동작한다.
 

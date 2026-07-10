@@ -1,4 +1,4 @@
-# web-user-manual
+# manual-gen
 
 웹 시스템을 분석해 **사용자 매뉴얼(docx/pptx)을 자동 생성**하는 Claude Code 개인 skill.
 
@@ -20,7 +20,7 @@
 ## 설치
 
 ```powershell
-git clone https://github.com/ycw3320/web-user-manual.git "$env:USERPROFILE\.claude\skills\web-user-manual"
+git clone https://github.com/ycw3320/manual-gen.git "$env:USERPROFILE\.claude\skills\manual-gen"
 ```
 
 새 Claude Code 세션부터 자동 인식된다.
@@ -31,12 +31,12 @@ Claude Code에서 자연어로 요청하면 자동 트리거된다:
 
 > "이 프로젝트 분석해서 관리자 매뉴얼 만들어줘. 스크린샷도 넣어서"
 
-수동 호출: `/web-user-manual [URL|경로] [키워드...]`
+수동 호출: `/manual-gen [URL|경로] [키워드...]`
 
 ```
-/web-user-manual                                  # 추론 후 일괄 확인 1회 → 진행
-/web-user-manual http://localhost:8080 관리자 docx  # 인자가 인터뷰를 대체
-/web-user-manual http://localhost:8080 auto        # 무정차: 질문 0회로 완주
+/manual-gen                                  # 추론 후 일괄 확인 1회 → 진행
+/manual-gen http://localhost:8080 관리자 docx  # 인자가 인터뷰를 대체
+/manual-gen http://localhost:8080 auto        # 무정차: 질문 0회로 완주
 ```
 
 개입 최소화 설계: 시스템명·URL·독자·출력 형식 등은 최대한 자동 추론하고, 기본 모드는

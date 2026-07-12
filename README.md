@@ -53,17 +53,22 @@ references/
 ├── manual-template.md          # 표준 목차·화면 문서화 포맷·표기 규약
 └── output-formats.md           # docx/pptx 변환 명세
 scripts/
-├── cdp_capture.py              # Chrome CDP 연결 풀페이지 캡처 (요구: pip install playwright)
+├── cdp_capture.py              # CDP 캡처: 풀페이지·배지 좌표 자동 산출(--mark)·PII 블러(--redact-*)·
+│                               #   에러 화면 감지·브라우저 정책 검증·자동 로그인·재개(--skip-existing)
 ├── capture_browser.ps1         # OS 수준 창 캡처 (Windows, 의존성 없음)
-├── annotate_screenshot.py      # 번호 배지 합성 (요구: Pillow)
-└── resize_images.py            # 문서 삽입 전 이미지 축소 (요구: Pillow)
+├── annotate_screenshot.py      # 번호 배지 합성 — markers.json(자동 좌표) 또는 수동 좌표 (요구: Pillow)
+├── resize_images.py            # 문서 삽입 전 이미지 축소 (요구: Pillow)
+├── draft_parser.py             # manual-draft.md 공용 파서 (빌더 내부용)
+├── build_pptx.py               # 원고→PPTX: 표지/CONTENTS/간지/화면 슬라이드·6개 초과 분할·자체 검증
+└── build_docx.py               # 원고→DOCX: 표지/자동 목차/헤딩/캡션/페이지 번호
 ```
 
 ## 요구 사항
 
 - Claude Code (Windows 기준으로 작성, capture_browser.ps1 외에는 OS 무관)
 - Python 3.10+ / Pillow (배지·리사이즈) / Playwright (CDP 캡처 시에만)
-- docx·pptx 산출은 Claude Code의 `docx`/`pptx` skill을 호출해 수행
+- docx·pptx 산출: 전용 `docx`/`pptx` skill이 있으면 호출, 없으면 번들 빌더
+  (python-pptx / python-docx) 사용 — 3단 폴백
 
 ## 안전 원칙
 

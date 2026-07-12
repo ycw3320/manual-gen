@@ -1,0 +1,463 @@
+"""manual-draft.md → 매뉴얼 PPTX 생성기 (전용 pptx skill 이 없는 환경의 표준 폴백).
+
+output-formats.md 의 pptx 명세를 내장한다:
+  표지 → CONTENTS(장·절 목록 + 슬라이드 번호) → 장 간지 → 화면 슬라이드(1절=1화면),
+  설명 6개 초과 시 (1)/(2) 분할, 마크다운 서식은 실제 서식으로 변환(기호 잔존 금지),
+  placeholder 는 이미지 프레임과 동일 크기의 회색 상자 + 캡션, 페이지 번호는 PPT 슬라이드 순번.
+
+사용 예:
+  python build_pptx.py --draft manual-work/manual-draft.md \
+      --screenshots manual-work/screenshots --out 관리자매뉴얼_시스템명_20260711.pptx
+
+종료 코드: 0 성공 / 1 파싱·생성 오류 / 2 python-pptx 미설치
+"""
+
+import argparse
+import math
+import os
+import re
+import sys
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8")
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from draft_parser import parse_draft, parse_inline, parse_meta, plain, png_size, resolve_image, CIRCLED
+
+
+def fail(msg, code=1):
+    print(f"[build_pptx] 오류: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+try:
+    from pptx import Presentation
+    from pptx.util import Inches, Pt
+    from pptx.dml.color import RGBColor
+    from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
+    from pptx.enum.shapes import MSO_SHAPE
+    from pptx.oxml.ns import qn
+except ImportError:
+    fail("python-pptx 가 설치되어 있지 않습니다. 설치 후 재시도하세요:\n  pip install python-pptx", code=2)
+
+SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)
+DARK = RGBColor(0x1F, 0x2A, 0x44)
+ACCENT = RGBColor(0x2E, 0x5B, 0xFF)
+TEXT = RGBColor(0x26, 0x26, 0x26)
+MUTED = RGBColor(0x8A, 0x8F, 0x98)
+NOTE = RGBColor(0xC0, 0x39, 0x2B)
+WHITE = RGBColor(0xFF, 0xFF, 0xFF)
+PH_BG = RGBColor(0xEC, 0xEE, 0xF1)
+PH_TX = RGBColor(0x6B, 0x72, 0x80)
+FONT = "맑은 고딕"
+
+# 분할 예산: 우측 설명 컬럼 기준. 항목 줄수 = ceil(글자수/34)
+MAX_ITEMS = 6
+SIDE_LINES = 20
+BOTTOM_LINES = 7
+
+
+def _set_font(run, size, bold=False, color=TEXT):
+    run.font.name = FONT
+    run.font.size = Pt(size)
+    run.font.bold = bold
+    run.font.color.rgb = color
+    rPr = run._r.get_or_add_rPr()
+    ea = rPr.find(qn("a:ea"))
+    if ea is None:
+        ea = rPr.makeelement(qn("a:ea"), {})
+        rPr.append(ea)
+    ea.set("typeface", FONT)
+
+
+def add_text(slide, x, y, w, h, wrap=True, anchor=MSO_ANCHOR.TOP):
+    box = slide.shapes.add_textbox(x, y, w, h)
+    tf = box.text_frame
+    tf.word_wrap = wrap
+    tf.vertical_anchor = anchor
+    tf.margin_left = tf.margin_right = Inches(0.02)
+    tf.margin_top = tf.margin_bottom = Inches(0.01)
+    return tf
+
+
+def set_para(p, segments, size, color=TEXT, bold=False, align=PP_ALIGN.LEFT, space_after=4):
+    """segments: 문자열 또는 (text, bold) 목록."""
+    p.alignment = align
+    p.space_after = Pt(space_after)
+    if isinstance(segments, str):
+        segments = [(segments, bold)]
+    for text, seg_bold in segments:
+        r = p.add_run()
+        r.text = text
+        _set_font(r, size, bold=bold or seg_bold, color=color)
+    return p
+
+
+def add_para(tf, *args, **kwargs):
+    p = tf.paragraphs[0] if not tf.paragraphs[0].runs else tf.add_paragraph()
+    return set_para(p, *args, **kwargs)
+
+
+def add_rect(slide, x, y, w, h, fill, line=None):
+    shp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = fill
+    if line is None:
+        shp.line.fill.background()
+    else:
+        shp.line.color.rgb = line
+        shp.line.width = Pt(0.75)
+    shp.shadow.inherit = False
+    return shp
+
+
+def est_lines(items, chars_per_line):
+    return sum(max(1, math.ceil(len(plain(t)) / chars_per_line)) for t in items)
+
+
+def image_ratio(path):
+    size = png_size(path)
+    return (size[0] / size[1]) if size else 1.33
+
+
+# ---------- 슬라이드 플랜 ----------
+
+def split_section(sec, draft_dir, shots_dir):
+    """절 하나를 1개 이상의 화면 슬라이드 플랜으로 나눈다."""
+    blocks = sec["blocks"]
+    paras = [b["text"] for b in blocks if b["type"] == "para"]
+    access = next((b["text"] for b in blocks if b["type"] == "access"), "")
+    notes = [b["text"] for b in blocks if b["type"] == "note"]
+    tables = [b for b in blocks if b["type"] == "table"]
+    image = next((b for b in blocks if b["type"] == "image"), None)
+    ph = next((b for b in blocks if b["type"] == "placeholder"), None)
+
+    # 항목별 마커를 사전 계산해 (마커, 텍스트) 쌍으로 보존한다 — 불릿과 절차(1.2.3.)와
+    # 배지 대응(①②③)이 한 절에 공존해도 각자의 스타일·순번을 잃지 않게 하기 위함이다
+    items = []
+    counters = {"circled": 0, "decimal": 0}
+    for b in blocks:
+        if b["type"] == "bullets":
+            items.extend(("•", t) for t in b["items"])
+        elif b["type"] == "numbered":
+            style = b.get("style", "circled")
+            for t in b["items"]:
+                counters[style] += 1
+                n = counters[style]
+                marker = CIRCLED[n - 1] if style == "circled" and n <= len(CIRCLED) else f"{n}."
+                items.append((marker, t))
+
+    img_path = resolve_image(image["src"], draft_dir, shots_dir) if image else None
+    horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
+    has_visual = bool(image or ph)
+    if not has_visual:
+        per_chars, budget = 88, 16
+    elif horizontal:
+        per_chars, budget = 80, BOTTOM_LINES
+    else:
+        per_chars, budget = 34, SIDE_LINES
+
+    chunks = [[]]
+    used = 0
+    for marker, text in items:
+        lines = max(1, math.ceil(len(plain(text)) / per_chars))
+        if chunks[-1] and (len(chunks[-1]) >= MAX_ITEMS or used + lines > budget):
+            chunks.append([])
+            used = 0
+        chunks[-1].append((marker, text))
+        used += lines
+    if not items:
+        chunks = [[]]
+
+    plans = []
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks):
+        plans.append({
+            "kind": "screen", "sec": sec, "part": (idx + 1, total),
+            "paras": paras if idx == 0 else [],
+            "access": access if idx == 0 else "",
+            "image": image, "img_path": img_path, "ph": ph,
+            "horizontal": horizontal,
+            "items": chunk,
+            "notes": notes if idx == total - 1 else [],
+            "tables": tables if idx == 0 else [],
+        })
+    return plans
+
+
+def build_plan(doc, draft_dir, shots_dir):
+    screens = []
+    for ch in doc["chapters"]:
+        screens.append({"kind": "divider", "ch": ch})
+        for sec in ch["sections"]:
+            screens.extend(split_section(sec, draft_dir, shots_dir))
+
+    toc_items = []
+    for ch in doc["chapters"]:
+        toc_items.append(("ch", f"{ch['num']}. {ch['title']}", ch))
+        for sec in ch["sections"]:
+            toc_items.append(("sec", f"{sec['num']} {sec['title']}", sec))
+    per_col, cols = 17, 2
+    toc_pages = max(1, math.ceil(len(toc_items) / (per_col * cols)))
+
+    plan = [{"kind": "cover"}] + [{"kind": "contents", "page": i} for i in range(toc_pages)] + screens
+
+    slide_no = {}
+    for idx, item in enumerate(plan, start=1):
+        if item["kind"] == "divider":
+            slide_no.setdefault(f"ch:{item['ch']['num']}", idx)
+        elif item["kind"] == "screen" and item["part"][0] == 1:
+            slide_no.setdefault(f"sec:{item['sec']['num']}", idx)
+    return plan, toc_items, per_col, cols, slide_no
+
+
+# ---------- 렌더 ----------
+
+def render_cover(prs, doc, args):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, DARK)
+    audience, version, date = parse_meta(doc["meta"])
+    audience = args.audience or audience or "사용자용"
+    version = args.version or version
+    date = args.date or date
+    title = args.title or doc["title"] or "사용자 매뉴얼"
+
+    tf = add_text(slide, Inches(0.8), Inches(2.4), Inches(11.7), Inches(1.2), anchor=MSO_ANCHOR.MIDDLE)
+    add_para(tf, title, 34, color=WHITE, bold=True, align=PP_ALIGN.CENTER)
+    tf = add_text(slide, Inches(0.8), Inches(3.7), Inches(11.7), Inches(0.6))
+    add_para(tf, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
+             16, color=RGBColor(0xB9, 0xC4, 0xDE), align=PP_ALIGN.CENTER)
+    add_rect(slide, 0, Inches(4.9), SLIDE_W, Pt(3), ACCENT)
+    meta_line = " · ".join(v for v in (audience, f"버전 {version}" if version else "", date) if v)
+    tf = add_text(slide, Inches(0.8), Inches(5.3), Inches(11.7), Inches(0.5))
+    add_para(tf, meta_line, 12, color=RGBColor(0x9A, 0xA5, 0xC0), align=PP_ALIGN.CENTER)
+
+
+def render_contents(prs, page_idx, toc_items, per_col, cols, slide_no):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    tf = add_text(slide, Inches(0.7), Inches(0.5), Inches(6), Inches(0.7))
+    add_para(tf, "CONTENTS", 26, color=DARK, bold=True)
+    add_rect(slide, Inches(0.72), Inches(1.25), Inches(1.6), Pt(2.5), ACCENT)
+
+    start = page_idx * per_col * cols
+    chunk = toc_items[start:start + per_col * cols]
+    col_w = Inches(5.9)
+    for c in range(cols):
+        col_items = chunk[c * per_col:(c + 1) * per_col]
+        if not col_items:
+            break
+        tf = add_text(slide, Inches(0.72) + c * Inches(6.2), Inches(1.6), col_w, Inches(5.6))
+        for kind, label, ref in col_items:
+            key = f"ch:{ref['num']}" if kind == "ch" else f"sec:{ref['num']}"
+            no = slide_no.get(key, "")
+            if kind == "ch":
+                add_para(tf, [(f"{label}", True), (f"   ····  {no}", False)], 14,
+                         color=DARK, space_after=6)
+            else:
+                add_para(tf, [(f"{label}", False), (f"   ····  {no}", False)], 11.5,
+                         color=TEXT, space_after=5)
+
+
+def render_divider(prs, ch):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, DARK)
+    tf = add_text(slide, Inches(1.0), Inches(2.7), Inches(11), Inches(1.4))
+    add_para(tf, f"{ch['num']}.", 52, color=ACCENT, bold=True)
+    tf = add_text(slide, Inches(1.0), Inches(4.0), Inches(11), Inches(1.0))
+    add_para(tf, ch["title"], 30, color=WHITE, bold=True)
+
+
+def render_header(slide, ch, sec, part):
+    add_rect(slide, 0, 0, SLIDE_W, Inches(1.0), DARK)
+    suffix = f" ({part[0]}/{part[1]})" if part[1] > 1 else ""
+    tf = add_text(slide, Inches(0.55), Inches(0.18), Inches(9.2), Inches(0.7), anchor=MSO_ANCHOR.MIDDLE)
+    p = tf.paragraphs[0]
+    set_para(p, [(f"{sec['num']}  ", False), (sec["title"] + suffix, True)], 20, color=WHITE)
+    p.runs[0].font.color.rgb = RGBColor(0x7E, 0x96, 0xE8)
+    tf = add_text(slide, Inches(9.6), Inches(0.33), Inches(3.3), Inches(0.4))
+    add_para(tf, f"{ch['num']}. {ch['title']}", 11, color=RGBColor(0xB9, 0xC4, 0xDE), align=PP_ALIGN.RIGHT)
+
+
+def render_page_no(slide, no):
+    tf = add_text(slide, Inches(12.55), Inches(7.05), Inches(0.6), Inches(0.35))
+    add_para(tf, str(no), 10, color=MUTED, align=PP_ALIGN.RIGHT)
+
+
+def render_items(tf, items, size):
+    for marker, text in items:
+        segs = [(f"{marker} ", False)] + parse_inline(text)
+        add_para(tf, segs, size, space_after=6)
+
+
+def render_table(slide, rows, x, y, w):
+    n_rows, n_cols = len(rows), max(len(r) for r in rows)
+    height = Inches(0.35) * n_rows
+    shape = slide.shapes.add_table(n_rows, n_cols, x, y, w, height)
+    table = shape.table
+    for ri, row in enumerate(rows):
+        for ci in range(n_cols):
+            cell = table.cell(ri, ci)
+            cell.text = row[ci] if ci < len(row) else ""
+            for p in cell.text_frame.paragraphs:
+                for r in p.runs:
+                    _set_font(r, 11, bold=(ri == 0), color=DARK if ri == 0 else TEXT)
+    return shape
+
+
+def render_screen(prs, plan_item, ch_of, page_no):
+    sec = plan_item["sec"]
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    render_header(slide, ch_of[sec["num"]], sec, plan_item["part"])
+    render_page_no(slide, page_no)
+
+    y = Inches(1.2)
+    if plan_item["paras"]:
+        total_lines = sum(max(1, math.ceil(len(p) / 95)) for p in plan_item["paras"])
+        tf = add_text(slide, Inches(0.55), y, Inches(12.2), Inches(0.3) * total_lines)
+        for para_text in plan_item["paras"]:
+            add_para(tf, parse_inline(para_text), 12.5)
+        y += Inches(0.28) * total_lines + Inches(0.06) * (len(plan_item["paras"]) - 1)
+    if plan_item["access"]:
+        tf = add_text(slide, Inches(0.55), y, Inches(12.2), Inches(0.35))
+        add_para(tf, [("접근 경로  ", True), (plan_item["access"], False)], 11.5, color=ACCENT)
+        y += Inches(0.4)
+
+    image, ph = plan_item["image"], plan_item["ph"]
+    img_path, horizontal = plan_item["img_path"], plan_item["horizontal"]
+    body_h = Inches(6.9) - y
+
+    if image or ph:
+        if horizontal and img_path:
+            max_w, max_h = Inches(9.4), body_h - Inches(2.3)
+            ratio = image_ratio(img_path)
+            w = min(max_w, max_h * ratio)
+            h = w / ratio
+            left = (SLIDE_W - w) / 2
+            slide.shapes.add_picture(img_path, left, y, width=w, height=h)
+            cap_y = y + h + Inches(0.05)
+            text_x, text_y, text_w = Inches(0.55), cap_y + Inches(0.35), Inches(12.2)
+        else:
+            max_w, max_h = Inches(6.3), body_h - Inches(0.5)
+            if img_path:
+                ratio = image_ratio(img_path)
+                w = min(max_w, max_h * ratio)
+                h = w / ratio
+                slide.shapes.add_picture(img_path, Inches(0.55), y, width=w, height=h)
+            else:
+                # placeholder 이거나, 이미지 블록은 있으나 파일이 누락된 경우 — 어느 쪽이든
+                # 회색 안내 상자로 렌더해 한 화면의 문제가 빌드 전체를 막지 않게 한다
+                info = ph or {"scr": (image or {}).get("scr", ""),
+                              "name": f"이미지 파일 누락: {(image or {}).get('src', '')}"}
+                w, h = max_w, min(max_h, Inches(4.4))
+                box = add_rect(slide, Inches(0.55), y, w, h, PH_BG, line=RGBColor(0xC9, 0xCE, 0xD6))
+                btf = box.text_frame
+                btf.word_wrap = True
+                btf.vertical_anchor = MSO_ANCHOR.MIDDLE
+                set_para(btf.paragraphs[0], "화면 이미지 추후 삽입", 14, color=PH_TX,
+                         bold=True, align=PP_ALIGN.CENTER)
+                set_para(btf.add_paragraph(), f"{info['scr']}  {info['name']}", 11, color=PH_TX,
+                         align=PP_ALIGN.CENTER)
+            cap_y = y + h + Inches(0.05)
+            text_x, text_y, text_w = Inches(7.1), y, Inches(5.7)
+
+        caption = (image.get("caption") if image else "") or (f"[사진 -] {ph['name']} (추후 삽입)" if ph else "")
+        if caption:
+            tf = add_text(slide, Inches(0.55) if not horizontal else 0,
+                          cap_y, w if not horizontal else SLIDE_W, Inches(0.3))
+            add_para(tf, caption, 9.5, color=MUTED,
+                     align=PP_ALIGN.CENTER)
+    else:
+        text_x, text_y, text_w = Inches(0.55), y, Inches(12.2)
+
+    # 표를 먼저 그리고, 설명 텍스트 프레임은 표 아래에서 시작한다 (겹침 방지)
+    ty = text_y
+    for tb in plan_item["tables"]:
+        render_table(slide, tb["rows"], text_x, ty, text_w)
+        ty += Inches(0.37) * len(tb["rows"]) + Inches(0.25)
+    tf = add_text(slide, text_x, ty, text_w, max(Inches(0.4), Inches(7.0) - ty))
+    render_items(tf, plan_item["items"], 11.5)
+    for note in plan_item["notes"]:
+        add_para(tf, parse_inline(note), 11, color=NOTE, space_after=4)
+
+
+# ---------- 자체 검증 ----------
+
+def self_check(prs):
+    problems = []
+    for idx, slide in enumerate(prs.slides, start=1):
+        item_count = 0
+        for shape in slide.shapes:
+            if not shape.has_text_frame:
+                continue
+            for p in shape.text_frame.paragraphs:
+                text = "".join(r.text for r in p.runs)
+                # "[버튼](부연)" 은 원고의 정상 표기이므로 이미지 문법(![)과 볼드(**)만 검사한다
+                if "**" in text or "![" in text:
+                    problems.append(f"슬라이드 {idx}: 마크다운 잔재 의심 — {text[:40]}")
+                stripped = text.strip()
+                first = stripped[:1]
+                # 장 번호는 zero-padded("03. ")로 렌더되므로 0으로 시작하는 번호는 제외
+                if first == "•" or (first and first in CIRCLED) or re.match(r"^(?!0)\d{1,2}\.\s", stripped):
+                    item_count += 1
+        if item_count > MAX_ITEMS:
+            problems.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {MAX_ITEMS} 초과)")
+    return problems
+
+
+def main():
+    ap = argparse.ArgumentParser(description="manual-draft.md → 매뉴얼 PPTX")
+    ap.add_argument("--draft", required=True, help="manual-draft.md 경로")
+    ap.add_argument("--screenshots", help="스크린샷 디렉토리 (기본: draft 위치의 screenshots/)")
+    ap.add_argument("--out", required=True, help="산출 pptx 경로")
+    ap.add_argument("--title", help="표지 제목 (기본: 원고 # 제목)")
+    ap.add_argument("--audience", help='표지 대상 표기 (예: "관리자용")')
+    ap.add_argument("--version", help="표지 버전 표기")
+    ap.add_argument("--date", help="표지 날짜 표기")
+    args = ap.parse_args()
+
+    if not os.path.exists(args.draft):
+        fail(f"원고 없음: {args.draft}")
+    draft_dir = os.path.dirname(os.path.abspath(args.draft))
+    shots_dir = args.screenshots or os.path.join(draft_dir, "screenshots")
+
+    doc = parse_draft(args.draft)
+    if not doc["chapters"]:
+        fail("장(## NN. 제목)을 찾지 못했습니다 — manual-template.md 규약을 확인하세요")
+
+    ch_of = {}
+    for ch in doc["chapters"]:
+        for sec in ch["sections"]:
+            ch_of[sec["num"]] = ch
+
+    plan, toc_items, per_col, cols, slide_no = build_plan(doc, draft_dir, shots_dir)
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
+    for idx, item in enumerate(plan, start=1):
+        if item["kind"] == "cover":
+            render_cover(prs, doc, args)
+        elif item["kind"] == "contents":
+            render_contents(prs, item["page"], toc_items, per_col, cols, slide_no)
+            render_page_no(prs.slides[-1], idx)
+        elif item["kind"] == "divider":
+            render_divider(prs, item["ch"])
+        else:
+            render_screen(prs, item, ch_of, idx)
+
+    problems = self_check(prs)
+    os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+    prs.save(args.out)
+
+    missing = sum(1 for it in plan if it["kind"] == "screen" and it["ph"] and it["part"][0] == 1)
+    print(f"[build_pptx] 저장 완료: {args.out} (슬라이드 {len(plan)}장, placeholder {missing}건)")
+    if problems:
+        print("[build_pptx] 자체 검증 경고:")
+        for pr in problems:
+            print(f"  - {pr}")
+    else:
+        print("[build_pptx] 자체 검증 통과 (마크다운 잔재·항목 초과 없음)")
+
+
+if __name__ == "__main__":
+    main()

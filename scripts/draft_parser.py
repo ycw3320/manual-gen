@@ -10,6 +10,7 @@
 빌더가 서식 객체로 처리하므로 마크다운 기호가 산출물에 남으면 안 되기 때문이다.
 """
 
+import math
 import os
 import re
 import struct
@@ -33,6 +34,16 @@ def parse_inline(text):
 def plain(text):
     """인라인 마크다운 기호를 제거한 순수 텍스트."""
     return "".join(t for t, _ in parse_inline(text))
+
+
+def text_lines(text, width_ea):
+    """렌더 줄 수 추정 — 한글 등 전각은 1.0, ASCII는 0.5 폭으로 가중한다.
+
+    width_ea 는 해당 텍스트 프레임의 '전각 기준 줄당 문자 수'. 단순 len() 나눗셈은
+    한글 문서에서 줄 수를 절반 가까이 과소평가해 요소 겹침을 만들기 때문이다.
+    """
+    units = sum(0.5 if ord(c) < 0x2E80 else 1.0 for c in text)
+    return max(1, math.ceil(units / width_ea))
 
 
 def png_size(path):

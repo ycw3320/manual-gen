@@ -23,7 +23,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import parse_draft, parse_inline, parse_meta, plain, png_size, resolve_image, CIRCLED
+from draft_parser import (parse_draft, parse_inline, parse_meta, plain, png_size,
+                          resolve_image, text_lines, CIRCLED)
 
 
 def fail(msg, code=1):
@@ -52,10 +53,13 @@ PH_BG = RGBColor(0xEC, 0xEE, 0xF1)
 PH_TX = RGBColor(0x6B, 0x72, 0x80)
 FONT = "맑은 고딕"
 
-# 분할 예산: 우측 설명 컬럼 기준. 항목 줄수 = ceil(글자수/34)
+# 분할 예산. 항목 줄수는 draft_parser.text_lines(전각 가중)로 추정한다
 MAX_ITEMS = 6
 SIDE_LINES = 20
 BOTTOM_LINES = 7
+SIDE_EA = 33      # 우측 설명 컬럼(5.7in, 11.5pt)의 전각 기준 줄당 문자 수
+WIDE_EA = 72      # 전폭 텍스트(12.2in, 11.5pt)
+INTRO_EA = 68     # 개요 문단(12.2in, 12.5pt)
 
 
 def _set_font(run, size, bold=False, color=TEXT):
@@ -112,10 +116,6 @@ def add_rect(slide, x, y, w, h, fill, line=None):
     return shp
 
 
-def est_lines(items, chars_per_line):
-    return sum(max(1, math.ceil(len(plain(t)) / chars_per_line)) for t in items)
-
-
 def image_ratio(path):
     size = png_size(path)
     return (size[0] / size[1]) if size else 1.33
@@ -130,7 +130,8 @@ def split_section(sec, draft_dir, shots_dir):
     access = next((b["text"] for b in blocks if b["type"] == "access"), "")
     notes = [b["text"] for b in blocks if b["type"] == "note"]
     tables = [b for b in blocks if b["type"] == "table"]
-    image = next((b for b in blocks if b["type"] == "image"), None)
+    images = [b for b in blocks if b["type"] == "image"]
+    image = images[0] if images else None
     ph = next((b for b in blocks if b["type"] == "placeholder"), None)
 
     # 항목별 마커를 사전 계산해 (마커, 텍스트) 쌍으로 보존한다 — 불릿과 절차(1.2.3.)와
@@ -152,16 +153,16 @@ def split_section(sec, draft_dir, shots_dir):
     horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
     has_visual = bool(image or ph)
     if not has_visual:
-        per_chars, budget = 88, 16
+        width_ea, budget = WIDE_EA, 16
     elif horizontal:
-        per_chars, budget = 80, BOTTOM_LINES
+        width_ea, budget = WIDE_EA, BOTTOM_LINES
     else:
-        per_chars, budget = 34, SIDE_LINES
+        width_ea, budget = SIDE_EA, SIDE_LINES
 
     chunks = [[]]
     used = 0
     for marker, text in items:
-        lines = max(1, math.ceil(len(plain(text)) / per_chars))
+        lines = text_lines(plain(text), width_ea)
         if chunks[-1] and (len(chunks[-1]) >= MAX_ITEMS or used + lines > budget):
             chunks.append([])
             used = 0
@@ -170,15 +171,33 @@ def split_section(sec, draft_dir, shots_dir):
     if not items:
         chunks = [[]]
 
+    # 균형 재배분: 그리디 분할(6+1 등)은 마지막 장에 항목 1~2개만 남는 고아 슬라이드를
+    # 만들므로, 청크 수는 유지한 채 항목을 균등(4+3 등)하게 다시 나눈다
+    if len(chunks) > 1:
+        k, n = len(chunks), len(items)
+        sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+        balanced, pos = [], 0
+        for size in sizes:
+            balanced.append(items[pos:pos + size])
+            pos += size
+        if all(len(c) <= MAX_ITEMS and
+               sum(text_lines(plain(t), width_ea) for _, t in c) <= budget * 1.2
+               for c in balanced):
+            chunks = balanced
+
     plans = []
     total = len(chunks)
     for idx, chunk in enumerate(chunks):
+        # 절에 캡처가 여러 장이면 분할 컷에 순서대로 매핑한다 — (2/2)의 설명이 화면
+        # 하단·다음 영역을 다룰 때 그 컷의 캡처가 함께 보이게 하기 위함이다
+        cut = images[idx] if idx < len(images) else image
+        cut_path = resolve_image(cut["src"], draft_dir, shots_dir) if cut else None
         plans.append({
             "kind": "screen", "sec": sec, "part": (idx + 1, total),
             "paras": paras if idx == 0 else [],
             "access": access if idx == 0 else "",
-            "image": image, "img_path": img_path, "ph": ph,
-            "horizontal": horizontal,
+            "image": cut, "img_path": cut_path, "ph": ph,
+            "horizontal": bool(cut_path) and image_ratio(cut_path) >= 1.45,
             "items": chunk,
             "notes": notes if idx == total - 1 else [],
             "tables": tables if idx == 0 else [],
@@ -243,8 +262,10 @@ def render_contents(prs, page_idx, toc_items, per_col, cols, slide_no):
     start = page_idx * per_col * cols
     chunk = toc_items[start:start + per_col * cols]
     col_w = Inches(5.9)
+    # 마지막(오버플로) 페이지에서 좌측 컬럼에만 몰리지 않도록 좌우 균등 분배
+    half = max(1, math.ceil(len(chunk) / cols))
     for c in range(cols):
-        col_items = chunk[c * per_col:(c + 1) * per_col]
+        col_items = chunk[c * half:(c + 1) * half]
         if not col_items:
             break
         tf = add_text(slide, Inches(0.72) + c * Inches(6.2), Inches(1.6), col_w, Inches(5.6))
@@ -284,6 +305,21 @@ def render_page_no(slide, no):
     add_para(tf, str(no), 10, color=MUTED, align=PP_ALIGN.RIGHT)
 
 
+def apply_picture_shadow(pic):
+    """그림 서식: 그림자-바깥쪽-오프셋 가운데 — 흰 배경 캡처와 슬라이드의 경계를 살린다."""
+    spPr = pic._element.spPr
+    effect = spPr.find(qn("a:effectLst"))
+    if effect is None:
+        effect = spPr.makeelement(qn("a:effectLst"), {})
+        spPr.append(effect)
+    shdw = effect.makeelement(qn("a:outerShdw"), {"blurRad": "63500", "dist": "0", "rotWithShape": "0"})
+    clr = shdw.makeelement(qn("a:srgbClr"), {"val": "000000"})
+    alpha = clr.makeelement(qn("a:alpha"), {"val": "43000"})
+    clr.append(alpha)
+    shdw.append(clr)
+    effect.append(shdw)
+
+
 def render_items(tf, items, size):
     for marker, text in items:
         segs = [(f"{marker} ", False)] + parse_inline(text)
@@ -311,17 +347,18 @@ def render_screen(prs, plan_item, ch_of, page_no):
     render_header(slide, ch_of[sec["num"]], sec, plan_item["part"])
     render_page_no(slide, page_no)
 
+    # 개요 문단과 접근 경로를 한 프레임에 넣는다 — 줄 수 추정이 빗나가도
+    # 프레임 안에서 이어지므로 서로 겹칠 수 없다
     y = Inches(1.2)
-    if plan_item["paras"]:
-        total_lines = sum(max(1, math.ceil(len(p) / 95)) for p in plan_item["paras"])
-        tf = add_text(slide, Inches(0.55), y, Inches(12.2), Inches(0.3) * total_lines)
+    if plan_item["paras"] or plan_item["access"]:
+        est = sum(text_lines(plain(p), INTRO_EA) for p in plan_item["paras"])
+        tf = add_text(slide, Inches(0.55), y, Inches(12.2),
+                      Inches(0.3) * (est + (1 if plan_item["access"] else 0)))
         for para_text in plan_item["paras"]:
             add_para(tf, parse_inline(para_text), 12.5)
-        y += Inches(0.28) * total_lines + Inches(0.06) * (len(plan_item["paras"]) - 1)
-    if plan_item["access"]:
-        tf = add_text(slide, Inches(0.55), y, Inches(12.2), Inches(0.35))
-        add_para(tf, [("접근 경로  ", True), (plan_item["access"], False)], 11.5, color=ACCENT)
-        y += Inches(0.4)
+        if plan_item["access"]:
+            add_para(tf, [("접근 경로  ", True), (plan_item["access"], False)], 11.5, color=ACCENT)
+        y += Inches(0.28) * est + (Inches(0.36) if plan_item["access"] else Inches(0.02)) + Inches(0.08)
 
     image, ph = plan_item["image"], plan_item["ph"]
     img_path, horizontal = plan_item["img_path"], plan_item["horizontal"]
@@ -334,7 +371,7 @@ def render_screen(prs, plan_item, ch_of, page_no):
             w = min(max_w, max_h * ratio)
             h = w / ratio
             left = (SLIDE_W - w) / 2
-            slide.shapes.add_picture(img_path, left, y, width=w, height=h)
+            apply_picture_shadow(slide.shapes.add_picture(img_path, left, y, width=w, height=h))
             cap_y = y + h + Inches(0.05)
             text_x, text_y, text_w = Inches(0.55), cap_y + Inches(0.35), Inches(12.2)
         else:
@@ -343,7 +380,7 @@ def render_screen(prs, plan_item, ch_of, page_no):
                 ratio = image_ratio(img_path)
                 w = min(max_w, max_h * ratio)
                 h = w / ratio
-                slide.shapes.add_picture(img_path, Inches(0.55), y, width=w, height=h)
+                apply_picture_shadow(slide.shapes.add_picture(img_path, Inches(0.55), y, width=w, height=h))
             else:
                 # placeholder 이거나, 이미지 블록은 있으나 파일이 누락된 경우 — 어느 쪽이든
                 # 회색 안내 상자로 렌더해 한 화면의 문제가 빌드 전체를 막지 않게 한다

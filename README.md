@@ -43,6 +43,29 @@ Claude Code에서 자연어로 요청하면 자동 트리거된다:
 **확인 1회**, `auto` 모드는 **질문 0회**(안전 관련 확인만 유지)로 동작한다.
 두 번째 실행부터는 `manual-work/config.md`의 이전 설정을 재사용해 질문이 사라진다.
 
+### 대상 시스템 결정 기준
+
+매뉴얼을 생성할 시스템은 아래 우선순위로 정해진다:
+
+1. **명시 인자** — `/manual-gen C:\projects\myapp` 또는 `/manual-gen http://host:port`
+2. **재실행 설정** — 현재 디렉토리의 `manual-work/config.md` (이전 실행 대상 재사용)
+3. **현재 작업 디렉토리** — 웹 프로젝트 마커(pom.xml·build.gradle·package.json 등)가
+   있으면 그 폴더가 대상 (실행 URL은 설정 파일 포트·로컬 서버 응답으로 추론)
+4. 어느 것도 없으면 일괄 확인 단계에서 경로/URL을 질문
+
+권장 흐름 — **대상 프로젝트 폴더에서 Claude Code를 열고 실행**:
+
+```
+cd C:\projects\대상프로젝트
+/manual-gen
+```
+
+### 산출물 위치
+
+- 최종 문서(`사용자매뉴얼_<시스템명>_<날짜>.docx|pptx`): **대상 프로젝트 루트**
+- 중간 산출물(config·inventory·스크린샷·원고): `<대상 프로젝트>\manual-work\`
+  — 재실행·재개의 기준이 되므로 지우지 말고, git 저장소라면 `.gitignore`에 추가
+
 ## 구성
 
 ```

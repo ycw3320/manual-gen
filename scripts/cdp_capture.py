@@ -192,7 +192,10 @@ def apply_redact(page, args) -> int:
 
 
 def compute_markers(page, selectors, full_page: bool):
-    """셀렉터별 배지 좌표(0~1 상대)를 산출한다. 배지는 요소 좌상단 모서리 부근에 둔다."""
+    """셀렉터별 배지 좌표와 요소 영역(0~1 상대)을 산출한다.
+
+    x,y = 요소 좌상단(배지 위치), w,h = 요소 크기(강조 테두리 박스용).
+    """
     data = page.evaluate(
         """(sels) => {
           const doc = document.documentElement;
@@ -205,8 +208,9 @@ def compute_markers(page, selectors, full_page: bool):
             if (!el) return { n: i + 1, selector: sel, found: false };
             const r = el.getBoundingClientRect();
             return { n: i + 1, selector: sel, found: true,
-              vx: r.left / vw, vy: r.top / vh,
-              dx: (r.left + sx) / fullW, dy: (r.top + sy) / fullH };
+              vx: r.left / vw, vy: r.top / vh, vw2: r.width / vw, vh2: r.height / vh,
+              dx: (r.left + sx) / fullW, dy: (r.top + sy) / fullH,
+              dw: r.width / fullW, dh: r.height / fullH };
           });
         }""",
         selectors,
@@ -216,11 +220,14 @@ def compute_markers(page, selectors, full_page: bool):
         if not m["found"]:
             markers.append({"n": m["n"], "selector": m["selector"], "found": False})
             continue
-        x = m["dx"] if full_page else m["vx"]
-        y = m["dy"] if full_page else m["vy"]
+        if full_page:
+            x, y, w, h = m["dx"], m["dy"], m["dw"], m["dh"]
+        else:
+            x, y, w, h = m["vx"], m["vy"], m["vw2"], m["vh2"]
+        clamp = lambda v: round(min(max(v, 0.0), 1.0), 4)
         markers.append({
             "n": m["n"], "selector": m["selector"], "found": True,
-            "x": round(min(max(x, 0.0), 1.0), 4), "y": round(min(max(y, 0.0), 1.0), 4),
+            "x": clamp(x), "y": clamp(y), "w": clamp(w), "h": clamp(h),
         })
     return markers
 

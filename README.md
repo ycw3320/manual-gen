@@ -13,7 +13,8 @@
 - **캡처 수단 자동 선택**: claude-in-chrome MCP → CDP(풀페이지) → headless → OS 창 캡처 폴백.
   브라우저는 **Chrome 최우선**, Chrome 불가 시 설치된 Chromium 계열(Edge/Whale/Brave)을 탐지해 사용자가 즉시 선택
 - **무개입 로그인 3단계**: 고정 프로필 세션 재사용 → 환경변수(`WUM_LOGIN_ID`/`WUM_LOGIN_PW`) 자동 로그인 → 직접 로그인 요청 폴백
-- **번호 배지 합성**: 스크린샷 위 원형 번호 배지 + 번호별 기능 설명 1:1 대응
+- **번호 배지·강조 테두리 합성**: 요소 영역에 붉은 테두리 박스 + 좌상단 번호 배지 +
+  번호별 기능 설명 1:1 대응 (좌표·크기는 캡처 시 셀렉터로 자동 산출)
 - **중단·재개**: `manual-work/inventory.md` 진행 원장 기반 — 세션이 끊겨도 이어서 진행
 - **출력**: Word(.docx) / PowerPoint(.pptx, 참고 템플릿 서식 복제 지원) / Markdown 폴백
 
@@ -79,7 +80,7 @@ scripts/
 ├── cdp_capture.py              # CDP 캡처: 풀페이지·배지 좌표 자동 산출(--mark)·PII 블러(--redact-*)·
 │                               #   에러 화면 감지·브라우저 정책 검증·자동 로그인·재개(--skip-existing)
 ├── capture_browser.ps1         # OS 수준 창 캡처 (Windows, 의존성 없음)
-├── annotate_screenshot.py      # 번호 배지 합성 — markers.json(자동 좌표) 또는 수동 좌표 (요구: Pillow)
+├── annotate_screenshot.py      # 번호 배지+강조 테두리 합성 — markers.json(자동) 또는 수동 좌표 (요구: Pillow)
 ├── resize_images.py            # 문서 삽입 전 이미지 축소 (요구: Pillow)
 ├── draft_parser.py             # manual-draft.md 공용 파서 (빌더 내부용)
 ├── build_pptx.py               # 원고→PPTX: 표지/CONTENTS/간지/화면 슬라이드·6개 초과 분할·자체 검증

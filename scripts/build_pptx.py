@@ -55,11 +55,20 @@ FONT = "맑은 고딕"
 
 # 분할 예산. 항목 줄수는 draft_parser.text_lines(전각 가중)로 추정한다
 MAX_ITEMS = 6
-SIDE_LINES = 20
+SIDE_LINES = 18
 BOTTOM_LINES = 7
 SIDE_EA = 33      # 우측 설명 컬럼(5.7in, 11.5pt)의 전각 기준 줄당 문자 수
 WIDE_EA = 72      # 전폭 텍스트(12.2in, 11.5pt)
 INTRO_EA = 68     # 개요 문단(12.2in, 12.5pt)
+
+# 고정 이미지 프레임 — 캡처본 크기·위치가 장표마다 달라 보이지 않도록 모든 화면
+# 슬라이드에서 동일한 프레임을 예약하고, 이미지는 비율 유지로 프레임에 맞춰 중앙 배치한다
+IMG_Y = Inches(2.25)          # 프레임 상단 (개요 2줄 + 접근 경로 예약 후 고정)
+V_FRAME_W = Inches(6.3)       # 세로형(좌측) 프레임
+V_FRAME_H = Inches(4.35)
+H_FRAME_W = Inches(9.4)       # 가로형(상단) 프레임
+H_FRAME_H = Inches(3.2)
+CAP_H = Inches(0.32)          # 캡션 줄 높이
 
 
 def _set_font(run, size, bold=False, color=TEXT):
@@ -362,48 +371,54 @@ def render_screen(prs, plan_item, ch_of, page_no):
 
     image, ph = plan_item["image"], plan_item["ph"]
     img_path, horizontal = plan_item["img_path"], plan_item["horizontal"]
-    body_h = Inches(6.9) - y
+
+    # 이미지 프레임 상단은 전 장표 공통(IMG_Y)으로 고정한다 — 개요 길이에 따라 캡처
+    # 크기·위치가 장표마다 달라 보이는 것을 막기 위함이다. 개요가 예약 공간(2줄+접근
+    # 경로)을 초과하는 예외에서만 겹침 방지를 위해 프레임을 아래로 민다.
+    img_y = max(IMG_Y, y)
+    if img_y > IMG_Y:
+        print(f"[build_pptx] 경고: '{sec['num']} {sec['title']}' 개요가 표준 예약(2줄)을 넘어 "
+              "이미지 프레임이 아래로 밀렸습니다 — 개요를 1~2문장으로 줄이면 전 장표 정렬이 유지됩니다",
+              file=sys.stderr)
 
     if image or ph:
-        if horizontal and img_path:
-            max_w, max_h = Inches(9.4), body_h - Inches(2.3)
-            ratio = image_ratio(img_path)
-            w = min(max_w, max_h * ratio)
-            h = w / ratio
-            left = (SLIDE_W - w) / 2
-            apply_picture_shadow(slide.shapes.add_picture(img_path, left, y, width=w, height=h))
-            cap_y = y + h + Inches(0.05)
-            text_x, text_y, text_w = Inches(0.55), cap_y + Inches(0.35), Inches(12.2)
-        else:
-            max_w, max_h = Inches(6.3), body_h - Inches(0.5)
-            if img_path:
-                ratio = image_ratio(img_path)
-                w = min(max_w, max_h * ratio)
-                h = w / ratio
-                apply_picture_shadow(slide.shapes.add_picture(img_path, Inches(0.55), y, width=w, height=h))
-            else:
-                # placeholder 이거나, 이미지 블록은 있으나 파일이 누락된 경우 — 어느 쪽이든
-                # 회색 안내 상자로 렌더해 한 화면의 문제가 빌드 전체를 막지 않게 한다
-                info = ph or {"scr": (image or {}).get("scr", ""),
-                              "name": f"이미지 파일 누락: {(image or {}).get('src', '')}"}
-                w, h = max_w, min(max_h, Inches(4.4))
-                box = add_rect(slide, Inches(0.55), y, w, h, PH_BG, line=RGBColor(0xC9, 0xCE, 0xD6))
-                btf = box.text_frame
-                btf.word_wrap = True
-                btf.vertical_anchor = MSO_ANCHOR.MIDDLE
-                set_para(btf.paragraphs[0], "화면 이미지 추후 삽입", 14, color=PH_TX,
-                         bold=True, align=PP_ALIGN.CENTER)
-                set_para(btf.add_paragraph(), f"{info['scr']}  {info['name']}", 11, color=PH_TX,
-                         align=PP_ALIGN.CENTER)
-            cap_y = y + h + Inches(0.05)
-            text_x, text_y, text_w = Inches(7.1), y, Inches(5.7)
+        frame_w, frame_h = (H_FRAME_W, H_FRAME_H) if (horizontal and img_path) else (V_FRAME_W, V_FRAME_H)
+        frame_x = (SLIDE_W - frame_w) / 2 if (horizontal and img_path) else Inches(0.55)
 
+        if img_path:
+            # 비율 유지로 프레임에 맞추고(fit) 프레임 중앙에 배치 — 같은 비율의 캡처는
+            # 어느 장표에서든 동일한 크기로 렌더된다
+            ratio = image_ratio(img_path)
+            w = min(frame_w, frame_h * ratio)
+            h = w / ratio
+            px = frame_x + (frame_w - w) / 2
+            py = img_y + (frame_h - h) / 2
+            apply_picture_shadow(slide.shapes.add_picture(img_path, px, py, width=w, height=h))
+        else:
+            # placeholder 이거나, 이미지 블록은 있으나 파일이 누락된 경우 — 어느 쪽이든
+            # 프레임과 동일한 크기의 회색 안내 상자로 렌더한다
+            info = ph or {"scr": (image or {}).get("scr", ""),
+                          "name": f"이미지 파일 누락: {(image or {}).get('src', '')}"}
+            box = add_rect(slide, frame_x, img_y, frame_w, frame_h, PH_BG,
+                           line=RGBColor(0xC9, 0xCE, 0xD6))
+            btf = box.text_frame
+            btf.word_wrap = True
+            btf.vertical_anchor = MSO_ANCHOR.MIDDLE
+            set_para(btf.paragraphs[0], "화면 이미지 추후 삽입", 14, color=PH_TX,
+                     bold=True, align=PP_ALIGN.CENTER)
+            set_para(btf.add_paragraph(), f"{info['scr']}  {info['name']}", 11, color=PH_TX,
+                     align=PP_ALIGN.CENTER)
+
+        cap_y = img_y + frame_h + Inches(0.05)  # 캡션도 프레임 하단 고정 위치
         caption = (image.get("caption") if image else "") or (f"[사진 -] {ph['name']} (추후 삽입)" if ph else "")
         if caption:
-            tf = add_text(slide, Inches(0.55) if not horizontal else 0,
-                          cap_y, w if not horizontal else SLIDE_W, Inches(0.3))
-            add_para(tf, caption, 9.5, color=MUTED,
-                     align=PP_ALIGN.CENTER)
+            tf = add_text(slide, frame_x, cap_y, frame_w, CAP_H)
+            add_para(tf, caption, 9.5, color=MUTED, align=PP_ALIGN.CENTER)
+
+        if horizontal and img_path:
+            text_x, text_y, text_w = Inches(0.55), cap_y + CAP_H + Inches(0.08), Inches(12.2)
+        else:
+            text_x, text_y, text_w = Inches(7.1), img_y, Inches(5.7)
     else:
         text_x, text_y, text_w = Inches(0.55), y, Inches(12.2)
 
@@ -488,6 +503,16 @@ def main():
 
     missing = sum(1 for it in plan if it["kind"] == "screen" and it["ph"] and it["part"][0] == 1)
     print(f"[build_pptx] 저장 완료: {args.out} (슬라이드 {len(plan)}장, placeholder {missing}건)")
+
+    # 배지·테두리 파이프라인 미사용 감지 — 세션이 옛 지침으로 돌아도 조립 시점에 잡는다
+    if os.path.isdir(shots_dir):
+        originals = [f for f in os.listdir(shots_dir)
+                     if f.lower().endswith(".png") and "_annotated" not in f]
+        annotated = [f for f in os.listdir(shots_dir) if "_annotated" in f]
+        if originals and not annotated:
+            print("[build_pptx] 경고: screenshots에 _annotated 파일이 0건 — 배지·강조 테두리 "
+                  "파이프라인(cdp_capture.py --mark → annotate_screenshot.py)이 사용되지 않았습니다. "
+                  "skill의 표준 형식(번호 배지+테두리)이 빠진 산출물입니다.", file=sys.stderr)
     if problems:
         print("[build_pptx] 자체 검증 경고:")
         for pr in problems:

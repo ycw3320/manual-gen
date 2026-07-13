@@ -134,12 +134,26 @@ def try_auto_login(page, args) -> bool:
 
 
 def detect_error_page(page, min_chars: int):
-    """프레임워크 에러 오버레이·빈 본문을 감지한다. 정상이면 None, 아니면 사유 문자열."""
+    """프레임워크 에러 오버레이·빈 본문을 감지한다. 정상이면 None, 아니면 사유 문자열.
+
+    특정 스택에 치우치지 않도록 주요 프레임워크의 에러 마커를 병렬로 검사하고,
+    스택 무관 백스톱(HTTP 상태는 호출부, 빈 본문은 여기)을 함께 둔다.
+    """
+    ERROR_ELEMENTS = ("nextjs-portal", "vite-error-overlay")
+    ERROR_MARKERS = (
+        "Unhandled Runtime Error",                      # Next.js
+        "Application error: a client-side exception",   # Next.js production
+        "Whitelabel Error Page",                        # Spring Boot
+        "Traceback (most recent call last)",            # Python/Django 디버그
+        "Fatal error:",                                 # PHP
+        "This page isn't working",                      # Chrome 자체 오류 페이지
+    )
     try:
-        if page.query_selector("nextjs-portal") is not None:
-            return "Next.js 에러 오버레이(nextjs-portal) 감지"
+        for sel in ERROR_ELEMENTS:
+            if page.query_selector(sel) is not None:
+                return f"에러 오버레이 요소 감지: {sel}"
         body_text = page.evaluate("document.body ? document.body.innerText : ''") or ""
-        for marker in ("Unhandled Runtime Error", "Application error: a client-side exception"):
+        for marker in ERROR_MARKERS:
             if marker in body_text:
                 return f"에러 마커 텍스트 감지: {marker}"
         if len(body_text.strip()) < min_chars:
@@ -255,6 +269,9 @@ def main():
     ap.add_argument("--min-body-chars", type=int, default=40, help="빈 페이지 판정 최소 본문 길이 (기본 40)")
     # 배지 좌표
     ap.add_argument("--mark", help='배지 좌표를 산출할 CSS 셀렉터 목록 "sel1;sel2;..." (번호는 순서대로 1..N)')
+    ap.add_argument("--mark-only", action="store_true",
+                    help="스크린샷은 찍지 않고 markers.json만 생성 — 다른 도구로 캡처한 이미지에 "
+                         "배지를 합성할 때 좌표 산출용 (같은 뷰포트 상태에서 실행할 것)")
     # PII 블러
     ap.add_argument("--redact-file", help="가릴 문자열 목록 파일(한 줄당 1개). CLI 인자로 PII를 받지 않는다")
     ap.add_argument("--redact-email", action="store_true", help="이메일 주소 패턴을 자동 블러")
@@ -390,6 +407,17 @@ def main():
             for m in markers:
                 if not m["found"]:
                     print(f"[cdp_capture] 경고: 배지 {m['n']} 셀렉터 미발견 — {m['selector']}", file=sys.stderr)
+
+        if args.mark_only:
+            if markers is None:
+                fail("--mark-only 에는 --mark 셀렉터 목록이 필요합니다")
+            mpath = os.path.splitext(args.out)[0] + ".markers.json"
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"image": os.path.basename(args.out), "full_page": args.full_page,
+                           "markers": markers}, f, ensure_ascii=False, indent=1)
+            found = sum(1 for m in markers if m["found"])
+            print(f"[cdp_capture] 배지 좌표만 저장(캡처 생략): {mpath} (산출 {found}/{len(markers)})")
+            return
 
         try:
             page.screenshot(path=args.out, full_page=args.full_page)

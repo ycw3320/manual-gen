@@ -466,6 +466,7 @@ def main():
     ap.add_argument("--audience", help='표지 대상 표기 (예: "관리자용")')
     ap.add_argument("--version", help="표지 버전 표기")
     ap.add_argument("--date", help="표지 날짜 표기")
+    ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 
     if not os.path.exists(args.draft):
@@ -476,6 +477,20 @@ def main():
     doc = parse_draft(args.draft)
     if not doc["chapters"]:
         fail("장(## NN. 제목)을 찾지 못했습니다 — manual-template.md 규약을 확인하세요")
+
+    # 원고 사전 검증 게이트 — 잘못된 입력이 결정론적 빌더를 통과해
+    # 잘못된 구조로 산출되는 것을 생성 전에 막는다
+    if not args.skip_validate:
+        import validate_draft
+        with open(args.draft, encoding="utf-8") as f:
+            raw = f.read()
+        errors, warns = validate_draft.validate(doc, draft_dir, shots_dir, raw_text=raw)
+        for w in warns:
+            print(f"[build_pptx] 원고 WARN: {w}")
+        if errors:
+            for e in errors:
+                print(f"[build_pptx] 원고 ERROR: {e}", file=sys.stderr)
+            fail(f"원고 검증 실패({len(errors)}건) — 원고를 수정하거나 --skip-validate 로 우회하세요")
 
     ch_of = {}
     for ch in doc["chapters"]:

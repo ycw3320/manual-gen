@@ -83,7 +83,9 @@ scripts/
 ├── annotate_screenshot.py      # 번호 배지+강조 테두리 합성 — markers.json(자동) 또는 수동 좌표 (요구: Pillow)
 ├── resize_images.py            # 문서 삽입 전 이미지 축소 (요구: Pillow)
 ├── draft_parser.py             # manual-draft.md 공용 파서 (빌더 내부용)
-├── build_pptx.py               # 원고→PPTX: 표지/CONTENTS/간지/화면 슬라이드·6개 초과 분할·자체 검증
+├── validate_draft.py           # 원고 사전 린터 — 구조 위반을 빌드 전에 차단 (빌더가 자동 호출)
+├── check_env.py                # 환경 점검(doctor) — 의존성·브라우저·가능 경로를 시작 시 확인
+├── build_pptx.py               # 원고→PPTX: 표지/CONTENTS/간지/고정 프레임·그림자·분할·자체 검증
 └── build_docx.py               # 원고→DOCX: 표지/자동 목차/헤딩/캡션/페이지 번호
 ```
 
@@ -91,8 +93,8 @@ scripts/
 
 - Claude Code (Windows 기준으로 작성, capture_browser.ps1 외에는 OS 무관)
 - Python 3.10+ / Pillow (배지·리사이즈) / Playwright (CDP 캡처 시에만)
-- docx·pptx 산출: 전용 `docx`/`pptx` skill이 있으면 호출, 없으면 번들 빌더
-  (python-pptx / python-docx) 사용 — 3단 폴백
+- docx·pptx 산출: **번들 빌더(python-pptx/python-docx)가 기본** — CLI/데스크톱 어디서든
+  동일 구조 보장. 전용 `docx`/`pptx` skill은 참고 템플릿 서식 복제가 필요한 경우에만 사용
 
 ## 안전 원칙
 

@@ -162,6 +162,7 @@ def main():
     ap.add_argument("--audience")
     ap.add_argument("--version")
     ap.add_argument("--date")
+    ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 
     if not os.path.exists(args.draft):
@@ -172,6 +173,19 @@ def main():
     doc = parse_draft(args.draft)
     if not doc["chapters"]:
         fail("장(## NN. 제목)을 찾지 못했습니다 — manual-template.md 규약을 확인하세요")
+
+    # 원고 사전 검증 게이트 (build_pptx 와 동일)
+    if not args.skip_validate:
+        import validate_draft
+        with open(args.draft, encoding="utf-8") as f:
+            raw = f.read()
+        errors, warns = validate_draft.validate(doc, draft_dir, shots_dir, raw_text=raw)
+        for w in warns:
+            print(f"[build_docx] 원고 WARN: {w}")
+        if errors:
+            for e in errors:
+                print(f"[build_docx] 원고 ERROR: {e}", file=sys.stderr)
+            fail(f"원고 검증 실패({len(errors)}건) — 원고를 수정하거나 --skip-validate 로 우회하세요")
 
     audience, version, date = parse_meta(doc["meta"])
     audience = args.audience or audience

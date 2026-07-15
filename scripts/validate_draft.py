@@ -31,6 +31,11 @@ from draft_parser import parse_draft, resolve_image
 
 UNRESOLVED_RE = re.compile(r"확인 필요|확정 전|TBD|미정")
 PHOTO_NO_RE = re.compile(r"\[사진\s*(\d+)\]")
+# 최종 독자용 문서에 남으면 안 되는 개발 용어 — 문체 린트 (manual-template.md 3절)
+# \b 는 한글을 단어 문자로 취급해 "API를"을 놓치므로 ASCII 경계로 검사한다
+TECH_TERMS_RE = re.compile(
+    r"(?<![A-Za-z])(?:API|DB)(?![A-Za-z])|엔드포인트|파라미터|렌더링|컴포넌트|쿼리|백엔드|프론트엔드|프런트엔드")
+IMPERATIVE_RE = re.compile(r"하시오")
 
 
 def validate(doc, draft_dir, shots_dir, raw_text=""):
@@ -99,6 +104,21 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
         hits = sorted(set(UNRESOLVED_RE.findall(raw_text)))
         if hits:
             warns.append(f"미확정 마킹 잔존: {hits} — 해소하거나 최종 보고에 명시할 것")
+
+    # 문체 린트: 독자용 문서에 개발 용어·명령형이 남으면 안 된다 (표기 규약 3절)
+    for ch in doc["chapters"]:
+        for sec in ch["sections"]:
+            for b in sec["blocks"]:
+                texts = b["items"] if b["type"] in ("bullets", "numbered") else \
+                    [b.get("text", "")] if b["type"] in ("para", "note") else []
+                for t in texts:
+                    tm = TECH_TERMS_RE.search(t)
+                    if tm:
+                        warns.append(f"[{sec['num']} {sec['title']}] 기술 용어 '{tm.group()}' — "
+                                     f"독자 언어로 바꿀 것: {t[:40]}")
+                    if IMPERATIVE_RE.search(t):
+                        warns.append(f"[{sec['num']} {sec['title']}] 명령형 종결(하시오) — "
+                                     f"존댓말 평서형으로: {t[:40]}")
 
     return errors, warns
 

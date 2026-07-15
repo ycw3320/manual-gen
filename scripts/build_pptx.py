@@ -4,6 +4,8 @@ output-formats.md 의 pptx 명세를 내장한다:
   표지 → CONTENTS(장·절 목록 + 슬라이드 번호) → 장 간지 → 화면 슬라이드(1절=1화면),
   설명 6개 초과 시 (1)/(2) 분할, 마크다운 서식은 실제 서식으로 변환(기호 잔존 금지),
   placeholder 는 이미지 프레임과 동일 크기의 회색 상자 + 캡션, 페이지 번호는 PPT 슬라이드 순번.
+  이미지 없는 짧은 절(시스템 개요·권한 체계·접속 환경 등)이 같은 장에 연속되면
+  한 슬라이드에 병합한다(절 제목을 소제목으로 스택) — 절마다 거의 빈 장이 생기는 낭비 방지.
 
 사용 예:
   python build_pptx.py --draft manual-work/manual-draft.md \
@@ -132,19 +134,9 @@ def image_ratio(path):
 
 # ---------- 슬라이드 플랜 ----------
 
-def split_section(sec, draft_dir, shots_dir):
-    """절 하나를 1개 이상의 화면 슬라이드 플랜으로 나눈다."""
-    blocks = sec["blocks"]
-    paras = [b["text"] for b in blocks if b["type"] == "para"]
-    access = next((b["text"] for b in blocks if b["type"] == "access"), "")
-    notes = [b["text"] for b in blocks if b["type"] == "note"]
-    tables = [b for b in blocks if b["type"] == "table"]
-    images = [b for b in blocks if b["type"] == "image"]
-    image = images[0] if images else None
-    ph = next((b for b in blocks if b["type"] == "placeholder"), None)
-
-    # 항목별 마커를 사전 계산해 (마커, 텍스트) 쌍으로 보존한다 — 불릿과 절차(1.2.3.)와
-    # 배지 대응(①②③)이 한 절에 공존해도 각자의 스타일·순번을 잃지 않게 하기 위함이다
+def collect_items(blocks):
+    """블록들의 항목별 마커를 사전 계산해 (마커, 텍스트) 쌍으로 보존한다 — 불릿과
+    절차(1.2.3.)와 배지 대응(①②③)이 한 절에 공존해도 각자의 스타일·순번을 잃지 않게."""
     items = []
     counters = {"circled": 0, "decimal": 0}
     for b in blocks:
@@ -157,6 +149,26 @@ def split_section(sec, draft_dir, shots_dir):
                 n = counters[style]
                 marker = CIRCLED[n - 1] if style == "circled" and n <= len(CIRCLED) else f"{n}."
                 items.append((marker, t))
+    return items
+
+
+def sec_visual(sec):
+    """절에 시각 요소(캡처 또는 placeholder)가 있는가 — 없으면 병합 후보 개요 절."""
+    return any(b["type"] in ("image", "placeholder") for b in sec["blocks"])
+
+
+def split_section(sec, draft_dir, shots_dir):
+    """절 하나를 1개 이상의 화면 슬라이드 플랜으로 나눈다."""
+    blocks = sec["blocks"]
+    paras = [b["text"] for b in blocks if b["type"] == "para"]
+    access = next((b["text"] for b in blocks if b["type"] == "access"), "")
+    notes = [b["text"] for b in blocks if b["type"] == "note"]
+    tables = [b for b in blocks if b["type"] == "table"]
+    images = [b for b in blocks if b["type"] == "image"]
+    image = images[0] if images else None
+    ph = next((b for b in blocks if b["type"] == "placeholder"), None)
+
+    items = collect_items(blocks)
 
     img_path = resolve_image(image["src"], draft_dir, shots_dir) if image else None
     horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
@@ -214,12 +226,79 @@ def split_section(sec, draft_dir, shots_dir):
     return plans
 
 
+# 개요 병합 슬라이드 — 렌더(render_sec_stack)와 동일한 수식으로 높이를 추정한다
+STACK_HEAD = 0.30      # 절 소제목 줄
+STACK_PARA = 0.27      # 개요 문단(12.5pt) 줄당
+STACK_ITEM = 0.25      # 항목·주의(11.5/11pt) 줄당
+STACK_ROW = 0.37       # 표 행당 (render_table 과 동일)
+STACK_TABLE_PAD = 0.25
+STACK_GAP = 0.18       # 절 사이 간격
+COMBINE_Y = 1.25       # 병합 본문 시작 y (in)
+COMBINE_BUDGET = 5.6   # 병합 본문 가용 높이 (in) — 페이지 번호(7.05) 침범 방지
+
+
+def sec_stack_height(sec):
+    """개요 절이 병합 슬라이드에서 차지할 높이(in) 추정."""
+    h = STACK_HEAD
+    for b in sec["blocks"]:
+        if b["type"] == "para":
+            h += text_lines(plain(b["text"]), INTRO_EA) * STACK_PARA
+        elif b["type"] == "access":
+            h += STACK_PARA
+        elif b["type"] == "note":
+            h += text_lines(plain(b["text"]), WIDE_EA) * STACK_ITEM
+        elif b["type"] == "table":
+            h += len(b["rows"]) * STACK_ROW + STACK_TABLE_PAD
+        elif b["type"] in ("bullets", "numbered"):
+            h += sum(text_lines(plain(t), WIDE_EA) for t in b["items"]) * STACK_ITEM
+    return h
+
+
+def combine_overview_runs(sections, draft_dir, shots_dir, ch):
+    """장 안의 절들을 순서대로 플랜으로 바꾸되, 연속된 개요 절(시각 요소 없음)은
+    분량이 예산 안이면 한 슬라이드로 병합한다. 절 경계에서만 나눈다."""
+    plans, run = [], []
+
+    def flush():
+        if not run:
+            return
+        groups, cur, used = [], [], 0.0
+        for sec in run:
+            h = sec_stack_height(sec) + (STACK_GAP if cur else 0)
+            if cur and used + h > COMBINE_BUDGET:
+                groups.append(cur)
+                cur, used = [], 0.0
+                h = sec_stack_height(sec)
+            cur.append(sec)
+            used += h
+        groups.append(cur)
+        combined = [g for g in groups if len(g) > 1]
+        gi = 0
+        for group in groups:
+            # 홀로 남은 절(분량 초과 포함)은 기존 단독 슬라이드 경로가 레이아웃을 보장한다
+            if len(group) == 1:
+                plans.extend(split_section(group[0], draft_dir, shots_dir))
+            else:
+                gi += 1
+                plans.append({"kind": "combined", "ch": ch, "secs": group,
+                              "part": (gi, len(combined))})
+        run.clear()
+
+    for sec in sections:
+        if sec_visual(sec):
+            flush()
+            plans.extend(split_section(sec, draft_dir, shots_dir))
+        else:
+            run.append(sec)
+    flush()
+    return plans
+
+
 def build_plan(doc, draft_dir, shots_dir):
     screens = []
     for ch in doc["chapters"]:
         screens.append({"kind": "divider", "ch": ch})
-        for sec in ch["sections"]:
-            screens.extend(split_section(sec, draft_dir, shots_dir))
+        screens.extend(combine_overview_runs(ch["sections"], draft_dir, shots_dir, ch))
 
     toc_items = []
     for ch in doc["chapters"]:
@@ -237,6 +316,9 @@ def build_plan(doc, draft_dir, shots_dir):
             slide_no.setdefault(f"ch:{item['ch']['num']}", idx)
         elif item["kind"] == "screen" and item["part"][0] == 1:
             slide_no.setdefault(f"sec:{item['sec']['num']}", idx)
+        elif item["kind"] == "combined":
+            for sec in item["secs"]:
+                slide_no.setdefault(f"sec:{sec['num']}", idx)
     return plan, toc_items, per_col, cols, slide_no
 
 
@@ -298,15 +380,16 @@ def render_divider(prs, ch):
     add_para(tf, ch["title"], 30, color=WHITE, bold=True)
 
 
-def render_header(slide, ch, sec, part):
+def render_header(slide, ch, sec, part, right_label=True):
     add_rect(slide, 0, 0, SLIDE_W, Inches(1.0), DARK)
     suffix = f" ({part[0]}/{part[1]})" if part[1] > 1 else ""
     tf = add_text(slide, Inches(0.55), Inches(0.18), Inches(9.2), Inches(0.7), anchor=MSO_ANCHOR.MIDDLE)
     p = tf.paragraphs[0]
     set_para(p, [(f"{sec['num']}  ", False), (sec["title"] + suffix, True)], 20, color=WHITE)
     p.runs[0].font.color.rgb = RGBColor(0x7E, 0x96, 0xE8)
-    tf = add_text(slide, Inches(9.6), Inches(0.33), Inches(3.3), Inches(0.4))
-    add_para(tf, f"{ch['num']}. {ch['title']}", 11, color=RGBColor(0xB9, 0xC4, 0xDE), align=PP_ALIGN.RIGHT)
+    if right_label:
+        tf = add_text(slide, Inches(9.6), Inches(0.33), Inches(3.3), Inches(0.4))
+        add_para(tf, f"{ch['num']}. {ch['title']}", 11, color=RGBColor(0xB9, 0xC4, 0xDE), align=PP_ALIGN.RIGHT)
 
 
 def render_page_no(slide, no):
@@ -324,6 +407,53 @@ def render_items(tf, items, size):
     for marker, text in items:
         segs = [(f"{marker} ", False)] + parse_inline(text)
         add_para(tf, segs, size, space_after=6)
+
+
+def render_sec_stack(slide, sec, y):
+    """개요 절 하나를 병합 슬라이드의 y 위치에 그리고 다음 y 를 돌려준다.
+    높이 수식은 sec_stack_height 와 반드시 일치해야 한다(겹침 방지의 근거)."""
+    blocks = sec["blocks"]
+    paras = [b["text"] for b in blocks if b["type"] == "para"]
+    access = next((b["text"] for b in blocks if b["type"] == "access"), "")
+    notes = [b["text"] for b in blocks if b["type"] == "note"]
+    tables = [b for b in blocks if b["type"] == "table"]
+    items = collect_items(blocks)
+
+    head_h = STACK_HEAD + sum(text_lines(plain(p), INTRO_EA) for p in paras) * STACK_PARA \
+        + (STACK_PARA if access else 0)
+    tf = add_text(slide, Inches(0.55), Inches(y), Inches(12.2), Inches(head_h))
+    add_para(tf, [(f"{sec['num']}  ", True), (sec["title"], True)], 15, color=DARK, space_after=5)
+    for para_text in paras:
+        add_para(tf, parse_inline(para_text), 12.5)
+    if access:
+        add_para(tf, [("접근 경로  ", True), (access, False)], 11.5, color=ACCENT)
+    y += head_h
+
+    for tb in tables:
+        render_table(slide, tb["rows"], Inches(0.55), Inches(y), Inches(12.2))
+        y += len(tb["rows"]) * STACK_ROW + STACK_TABLE_PAD
+
+    if items or notes:
+        body_h = sum(text_lines(plain(t), WIDE_EA) for _, t in items) * STACK_ITEM \
+            + sum(text_lines(plain(n), WIDE_EA) for n in notes) * STACK_ITEM
+        tf = add_text(slide, Inches(0.55), Inches(y), Inches(12.2), Inches(max(0.3, body_h)))
+        render_items(tf, items, 11.5)
+        for note in notes:
+            add_para(tf, parse_inline(note), 11, color=NOTE, space_after=4)
+        y += body_h
+    return y
+
+
+def render_combined(prs, item, page_no):
+    """이미지 없는 연속 개요 절 묶음을 한 슬라이드로 — 절 제목을 소제목으로 스택한다."""
+    ch = item["ch"]
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    render_header(slide, ch, {"num": ch["num"], "title": ch["title"]}, item["part"],
+                  right_label=False)
+    render_page_no(slide, page_no)
+    y = COMBINE_Y
+    for sec in item["secs"]:
+        y = render_sec_stack(slide, sec, y) + STACK_GAP
 
 
 def render_table(slide, rows, x, y, w):
@@ -426,7 +556,7 @@ def render_screen(prs, plan_item, ch_of, page_no):
 
 # ---------- 자체 검증 ----------
 
-def self_check(prs):
+def self_check(prs, combined_idx=frozenset()):
     problems = []
     for idx, slide in enumerate(prs.slides, start=1):
         item_count = 0
@@ -443,7 +573,9 @@ def self_check(prs):
                 # 장 번호는 zero-padded("03. ")로 렌더되므로 0으로 시작하는 번호는 제외
                 if first == "•" or (first and first in CIRCLED) or re.match(r"^(?!0)\d{1,2}\.\s", stripped):
                     item_count += 1
-        if item_count > MAX_ITEMS:
+        # 항목 밀도 규칙(6개 분할)은 화면 슬라이드 대상 — 개요 병합 슬라이드는 여러 절의
+        # 짧은 항목이 합산되므로 제외한다 (높이는 병합 예산이 이미 보장)
+        if item_count > MAX_ITEMS and idx not in combined_idx:
             problems.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {MAX_ITEMS} 초과)")
     return problems
 
@@ -500,10 +632,13 @@ def main():
             render_page_no(prs.slides[-1], idx)
         elif item["kind"] == "divider":
             render_divider(prs, item["ch"])
+        elif item["kind"] == "combined":
+            render_combined(prs, item, idx)
         else:
             render_screen(prs, item, ch_of, idx)
 
-    problems = self_check(prs)
+    combined_idx = {i for i, it in enumerate(plan, start=1) if it["kind"] == "combined"}
+    problems = self_check(prs, combined_idx)
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     prs.save(args.out)
 

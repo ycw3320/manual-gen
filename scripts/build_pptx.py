@@ -314,19 +314,10 @@ def render_page_no(slide, no):
     add_para(tf, str(no), 10, color=MUTED, align=PP_ALIGN.RIGHT)
 
 
-def apply_picture_shadow(pic):
-    """그림 서식: 그림자-바깥쪽-오프셋 가운데 — 흰 배경 캡처와 슬라이드의 경계를 살린다."""
-    spPr = pic._element.spPr
-    effect = spPr.find(qn("a:effectLst"))
-    if effect is None:
-        effect = spPr.makeelement(qn("a:effectLst"), {})
-        spPr.append(effect)
-    shdw = effect.makeelement(qn("a:outerShdw"), {"blurRad": "63500", "dist": "0", "rotWithShape": "0"})
-    clr = shdw.makeelement(qn("a:srgbClr"), {"val": "000000"})
-    alpha = clr.makeelement(qn("a:alpha"), {"val": "43000"})
-    clr.append(alpha)
-    shdw.append(clr)
-    effect.append(shdw)
+def apply_picture_border(pic):
+    """그림 서식: 검은색 실선 테두리(두께 기본값) — 흰 배경 캡처와 슬라이드의 경계를 살린다.
+    그림자는 쓰지 않는다(뷰어별 렌더 편차·템플릿 경로 누락 문제로 테두리로 일원화)."""
+    pic.line.color.rgb = RGBColor(0x00, 0x00, 0x00)
 
 
 def render_items(tf, items, size):
@@ -393,7 +384,7 @@ def render_screen(prs, plan_item, ch_of, page_no):
             h = w / ratio
             px = frame_x + (frame_w - w) / 2
             py = img_y + (frame_h - h) / 2
-            apply_picture_shadow(slide.shapes.add_picture(img_path, px, py, width=w, height=h))
+            apply_picture_border(slide.shapes.add_picture(img_path, px, py, width=w, height=h))
         else:
             # placeholder 이거나, 이미지 블록은 있으나 파일이 누락된 경우 — 어느 쪽이든
             # 프레임과 동일한 크기의 회색 안내 상자로 렌더한다

@@ -10,6 +10,8 @@ output-formats.md 의 pptx 명세를 내장한다:
   CONTENTS 번호만 첫 하위 절 슬라이드로 위임한다 — 헤더만 있는 빈 장표 방지.
   --orientation 으로 세로(A4, 기본)/가로(16:9) 를 선택할 수 있다. 세로형은 모든
   캡처를 상(이미지)/하(설명)으로 배치하고 CONTENTS 를 1컬럼으로 구성한다.
+  --theme 으로 색 테마(navy 기본/forest/charcoal)를 선택할 수 있다 — 표지·간지·
+  헤더의 배경/포인트 팔레트만 바뀌고 본문 텍스트·주의(※) 색은 공통이다.
 
 사용 예:
   python build_pptx.py --draft manual-work/manual-draft.md \
@@ -49,8 +51,6 @@ try:
 except ImportError:
     fail("python-pptx 가 설치되어 있지 않습니다. 설치 후 재시도하세요:\n  pip install python-pptx", code=2)
 
-DARK = RGBColor(0x1F, 0x2A, 0x44)
-ACCENT = RGBColor(0x2E, 0x5B, 0xFF)
 TEXT = RGBColor(0x26, 0x26, 0x26)
 MUTED = RGBColor(0x8A, 0x8F, 0x98)
 NOTE = RGBColor(0xC0, 0x39, 0x2B)
@@ -58,6 +58,34 @@ WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 PH_BG = RGBColor(0xEC, 0xEE, 0xF1)
 PH_TX = RGBColor(0x6B, 0x72, 0x80)
 FONT = "맑은 고딕"
+
+# 테마 팔레트 — dark(표지·간지·헤더 배경), accent(포인트·접근 경로·액센트 바),
+# soft/softer(어두운 배경 위 보조 텍스트), head_num(헤더의 절 번호).
+# 본문 텍스트(TEXT)·주의(NOTE)·placeholder 색은 의미색이라 테마와 무관하게 공통이다.
+THEMES = {
+    "navy":     {"dark": "1F2A44", "accent": "2E5BFF",
+                 "soft": "B9C4DE", "softer": "9AA5C0", "head_num": "7E96E8"},
+    "forest":   {"dark": "1F3D2F", "accent": "0FA47A",
+                 "soft": "BCD8CB", "softer": "98BFAF", "head_num": "6FC9A8"},
+    "charcoal": {"dark": "2B2F36", "accent": "E8590C",
+                 "soft": "C9CED6", "softer": "A6ADB8", "head_num": "F08C4B"},
+}
+
+
+def _rgb(hex6):
+    return RGBColor(int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16))
+
+
+def apply_theme(name):
+    """표지·간지·헤더의 배경/포인트 팔레트를 모듈 전역에 적용한다."""
+    global THEME, DARK, ACCENT, DARK_SOFT, DARK_SOFTER, HEAD_NUM
+    t = THEMES[name]
+    THEME = name
+    DARK, ACCENT = _rgb(t["dark"]), _rgb(t["accent"])
+    DARK_SOFT, DARK_SOFTER, HEAD_NUM = _rgb(t["soft"]), _rgb(t["softer"]), _rgb(t["head_num"])
+
+
+apply_theme("navy")
 
 MAX_ITEMS = 6                 # 슬라이드당 설명 항목 상한 (초과 시 (1)/(2) 분할)
 CAP_H = Inches(0.32)          # 캡션 줄 높이
@@ -406,11 +434,11 @@ def render_cover(prs, doc, args):
     add_para(tf, title, 34, color=WHITE, bold=True, align=PP_ALIGN.CENTER)
     tf = add_text(slide, Inches(0.8), vh(0.493), cover_w, Inches(0.6))
     add_para(tf, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
-             16, color=RGBColor(0xB9, 0xC4, 0xDE), align=PP_ALIGN.CENTER)
+             16, color=DARK_SOFT, align=PP_ALIGN.CENTER)
     add_rect(slide, 0, vh(0.653), SLIDE_W, Pt(3), ACCENT)
     meta_line = " · ".join(v for v in (audience, f"버전 {version}" if version else "", date) if v)
     tf = add_text(slide, Inches(0.8), vh(0.707), cover_w, Inches(0.5))
-    add_para(tf, meta_line, 12, color=RGBColor(0x9A, 0xA5, 0xC0), align=PP_ALIGN.CENTER)
+    add_para(tf, meta_line, 12, color=DARK_SOFTER, align=PP_ALIGN.CENTER)
 
 
 def render_contents(prs, page_idx, toc_items, per_col, cols, slide_no):
@@ -459,11 +487,11 @@ def render_header(slide, ch, sec, part, right_label=True):
     tf = add_text(slide, Inches(0.55), Inches(0.18), title_w, Inches(0.7), anchor=MSO_ANCHOR.MIDDLE)
     p = tf.paragraphs[0]
     set_para(p, [(f"{sec['num']}  ", False), (sec["title"] + suffix, True)], 20, color=WHITE)
-    p.runs[0].font.color.rgb = RGBColor(0x7E, 0x96, 0xE8)
+    p.runs[0].font.color.rgb = HEAD_NUM
     if right_label:
         label_w = Inches(2.35) if PORTRAIT else Inches(3.3)
         tf = add_text(slide, SLIDE_W - label_w - Inches(0.43), Inches(0.33), label_w, Inches(0.4))
-        add_para(tf, f"{ch['num']}. {ch['title']}", 11, color=RGBColor(0xB9, 0xC4, 0xDE), align=PP_ALIGN.RIGHT)
+        add_para(tf, f"{ch['num']}. {ch['title']}", 11, color=DARK_SOFT, align=PP_ALIGN.RIGHT)
 
 
 def render_page_no(slide, no):
@@ -678,10 +706,13 @@ def main():
     ap.add_argument("--date", help="표지 날짜 표기")
     ap.add_argument("--orientation", choices=["landscape", "portrait"], default="portrait",
                     help="슬라이드 방향: portrait=A4 세로(기본) / landscape=16:9 가로")
+    ap.add_argument("--theme", choices=sorted(THEMES), default="navy",
+                    help="색 테마: navy=네이비+블루(기본) / forest=딥그린+틸 / charcoal=차콜+오렌지")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 
     apply_orientation(args.orientation == "portrait")
+    apply_theme(args.theme)
 
     if not os.path.exists(args.draft):
         fail(f"원고 없음: {args.draft}")

@@ -8,7 +8,7 @@ output-formats.md 의 pptx 명세를 내장한다:
   한 슬라이드에 병합한다(절 제목을 소제목으로 스택) — 절마다 거의 빈 장이 생기는 낭비 방지.
   제목만 있고 본문이 없는 부모 절(3단 번호의 그룹 제목)은 슬라이드를 만들지 않고
   CONTENTS 번호만 첫 하위 절 슬라이드로 위임한다 — 헤더만 있는 빈 장표 방지.
-  --orientation 으로 가로(16:9, 기본)/세로(A4) 를 선택할 수 있다. 세로형은 모든
+  --orientation 으로 세로(A4, 기본)/가로(16:9) 를 선택할 수 있다. 세로형은 모든
   캡처를 상(이미지)/하(설명)으로 배치하고 CONTENTS 를 1컬럼으로 구성한다.
 
 사용 예:
@@ -68,10 +68,11 @@ PORTRAIT = False
 def apply_orientation(portrait):
     """슬라이드 방향별 레이아웃 프로파일을 모듈 전역에 적용한다.
 
-    가로(기본, 16:9 13.333x7.5in): 세로 비율 캡처는 좌(이미지)/우(설명),
+    세로(기본, A4 7.5x10.833in): 폭이 좁아 모든 캡처를 상(이미지)/하(설명)으로
+    배치하고, CONTENTS 는 1컬럼으로 구성한다. 줄당 문자 수(EA)·설명 예산도 폭에
+    비례해 조정한다.
+    가로(16:9 13.333x7.5in): 세로 비율 캡처는 좌(이미지)/우(설명),
     가로 비율 캡처는 상(이미지)/하(설명)으로 배치한다.
-    세로(A4 7.5x10.833in): 폭이 좁아 모든 캡처를 상(이미지)/하(설명)으로 배치하고,
-    CONTENTS 는 1컬럼으로 구성한다. 줄당 문자 수(EA)·설명 예산도 폭에 비례해 조정.
     """
     global PORTRAIT, SLIDE_W, SLIDE_H, BODY_X, BODY_W, SIDE_X, SIDE_W, TEXT_BOTTOM
     global IMG_Y, V_FRAME_W, V_FRAME_H, H_FRAME_W, H_FRAME_H, PORT_IMG_MAX_H
@@ -675,8 +676,8 @@ def main():
     ap.add_argument("--audience", help='표지 대상 표기 (예: "관리자용")')
     ap.add_argument("--version", help="표지 버전 표기")
     ap.add_argument("--date", help="표지 날짜 표기")
-    ap.add_argument("--orientation", choices=["landscape", "portrait"], default="landscape",
-                    help="슬라이드 방향: landscape=16:9 가로(기본) / portrait=A4 세로")
+    ap.add_argument("--orientation", choices=["landscape", "portrait"], default="portrait",
+                    help="슬라이드 방향: portrait=A4 세로(기본) / landscape=16:9 가로")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 

@@ -438,15 +438,28 @@ def render_cover(prs, doc, args):
     version = args.version or version
     date = args.date or date
     title = args.title or doc["title"] or "사용자 매뉴얼"
+    label = args.cover_label
+
+    # 제목이 "관리자 매뉴얼 — 시스템명" 꼴이면 프로젝트명만 남긴다 — 표지 규격은
+    # [매뉴얼 구분(분리형일 때만)] + [프로젝트명] 이고, 구분 표기는 label 이 담당한다
+    m = re.match(r"^(.{0,20}매뉴얼)\s*[—\-–:]\s*(.+)$", title)
+    if m:
+        title = m.group(2).strip()
 
     # 세로 위치는 슬라이드 높이 비율로 잡는다 — 가로/세로 어느 방향에서도 같은 균형
     vh = lambda frac: Inches(SLIDE_H.inches * frac)
     cover_w = SLIDE_W - Inches(1.6)
+    if label:
+        # 독자 영역별 매뉴얼이 분리된 세트 — 1행 "〈독자〉 매뉴얼", 개행 후 프로젝트명
+        tf = add_text(slide, Inches(0.8), vh(0.245), cover_w, Inches(0.5))
+        add_para(tf, label, 20, color=DARK_SOFT, align=PP_ALIGN.CENTER)
     tf = add_text(slide, Inches(0.8), vh(0.32), cover_w, Inches(1.2), anchor=MSO_ANCHOR.MIDDLE)
     add_para(tf, title, 34, color=WHITE, bold=True, align=PP_ALIGN.CENTER)
-    tf = add_text(slide, Inches(0.8), vh(0.493), cover_w, Inches(0.6))
-    add_para(tf, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
-             16, color=DARK_SOFT, align=PP_ALIGN.CENTER)
+    if not label:
+        # 단일 매뉴얼 — 프로젝트명만 크게, 아래에 대상 부제
+        tf = add_text(slide, Inches(0.8), vh(0.493), cover_w, Inches(0.6))
+        add_para(tf, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
+                 16, color=DARK_SOFT, align=PP_ALIGN.CENTER)
     add_rect(slide, 0, vh(0.653), SLIDE_W, Pt(3), ACCENT)
     meta_line = " · ".join(v for v in (audience, f"버전 {version}" if version else "", date) if v)
     tf = add_text(slide, Inches(0.8), vh(0.707), cover_w, Inches(0.5))
@@ -720,6 +733,10 @@ def main():
                     help="슬라이드 방향: portrait=A4 세로(기본) / landscape=16:9 가로")
     ap.add_argument("--theme", choices=sorted(THEMES), default="navy",
                     help="색 테마: navy=네이비+블루(기본) / forest=딥그린+틸 / charcoal=차콜+오렌지")
+    ap.add_argument("--cover-label",
+                    help='표지 1행 매뉴얼 구분 표기(예: "관리자 매뉴얼") — 독자 영역별로 '
+                         "매뉴얼이 분리된 세트일 때만 지정. 지정 시 표지가 [구분]+[프로젝트명] "
+                         "2행이 되고, 미지정 시 프로젝트명만 표기한다")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 

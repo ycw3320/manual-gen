@@ -298,10 +298,22 @@ def split_section(sec, draft_dir, shots_dir):
 STACK_HEAD = 0.30      # 절 소제목 줄
 STACK_PARA = 0.27      # 개요 문단(12.5pt) 줄당
 STACK_ITEM = 0.25      # 항목·주의(11.5/11pt) 줄당
-STACK_ROW = 0.37       # 표 행당 (render_table 과 동일)
 STACK_TABLE_PAD = 0.25
 STACK_GAP = 0.18       # 절 사이 간격
 COMBINE_Y = 1.25       # 병합 본문 시작 y (in) — 가용 높이(COMBINE_BUDGET)는 방향 프로파일이 정한다
+
+
+def table_height_est(rows, width_in):
+    """표의 실제 렌더 높이(in) 추정 — 셀 텍스트가 열 폭을 넘어 래핑되면 행이
+    그만큼 커지므로, 행별 최대 셀 줄 수를 반영한다. 좁은 폭(세로형)에서 고정
+    행높이 추정이 과소평가되어 뒤따르는 요소와 겹치는 것을 막는다."""
+    n_cols = max(len(r) for r in rows)
+    col_ea = max(6, int(width_in / n_cols * 5.9))  # 11pt 전각 기준 열당 줄 문자 수
+    h = 0.0
+    for r in rows:
+        lines = max((text_lines(plain(c), col_ea) for c in r), default=1)
+        h += max(0.37, 0.24 * lines + 0.13)
+    return h
 
 
 def sec_stack_height(sec):
@@ -315,7 +327,7 @@ def sec_stack_height(sec):
         elif b["type"] == "note":
             h += text_lines(plain(b["text"]), WIDE_EA) * STACK_ITEM
         elif b["type"] == "table":
-            h += len(b["rows"]) * STACK_ROW + STACK_TABLE_PAD
+            h += table_height_est(b["rows"], BODY_W.inches) + STACK_TABLE_PAD
         elif b["type"] in ("bullets", "numbered"):
             h += sum(text_lines(plain(t), WIDE_EA) for t in b["items"]) * STACK_ITEM
     return h
@@ -533,7 +545,7 @@ def render_sec_stack(slide, sec, y):
 
     for tb in tables:
         render_table(slide, tb["rows"], BODY_X, Inches(y), BODY_W)
-        y += len(tb["rows"]) * STACK_ROW + STACK_TABLE_PAD
+        y += table_height_est(tb["rows"], BODY_W.inches) + STACK_TABLE_PAD
 
     if items or notes:
         body_h = sum(text_lines(plain(t), WIDE_EA) for _, t in items) * STACK_ITEM \
@@ -662,7 +674,7 @@ def render_screen(prs, plan_item, ch_of, page_no):
     ty = text_y
     for tb in plan_item["tables"]:
         render_table(slide, tb["rows"], text_x, ty, text_w)
-        ty += Inches(0.37) * len(tb["rows"]) + Inches(0.25)
+        ty += Inches(table_height_est(tb["rows"], text_w.inches)) + Inches(0.25)
     tf = add_text(slide, text_x, ty, text_w, max(Inches(0.4), TEXT_BOTTOM - ty))
     render_items(tf, plan_item["items"], 11.5)
     for note in plan_item["notes"]:

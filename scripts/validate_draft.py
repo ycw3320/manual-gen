@@ -109,7 +109,8 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
     for ch in doc["chapters"]:
         for sec in ch["sections"]:
             for b in sec["blocks"]:
-                texts = b["items"] if b["type"] in ("bullets", "numbered") else \
+                texts = b["items"] if b["type"] == "bullets" else \
+                    [it["text"] for it in b["items"]] if b["type"] == "numbered" else \
                     [b.get("text", "")] if b["type"] in ("para", "note") else []
                 for t in texts:
                     tm = TECH_TERMS_RE.search(t)
@@ -129,7 +130,7 @@ def run(draft_path, shots_dir=None):
         return [f"원고 없음: {draft_path}"], []
     draft_dir = os.path.dirname(os.path.abspath(draft_path))
     shots = shots_dir or os.path.join(draft_dir, "screenshots")
-    with open(draft_path, encoding="utf-8") as f:
+    with open(draft_path, encoding="utf-8-sig") as f:
         raw = f.read()
     doc = parse_draft(draft_path)
     return validate(doc, draft_dir, shots, raw_text=raw)

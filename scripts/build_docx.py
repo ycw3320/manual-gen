@@ -22,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import parse_draft, parse_inline, parse_meta, resolve_image, CIRCLED
+from draft_parser import parse_draft, parse_inline, parse_meta, resolve_image
 
 
 def fail(msg, code=1):
@@ -108,13 +108,10 @@ def render_blocks(doc_x, blocks, draft_dir, shots_dir, counters):
             for it in b["items"]:
                 add_runs(doc_x.add_paragraph(style="List Bullet"), parse_inline(it))
         elif t == "numbered":
-            style = b.get("style", "circled")
-            for k, it in enumerate(b["items"]):
-                if style == "decimal":
-                    marker = f"{k + 1}."
-                else:
-                    marker = CIRCLED[k] if k < len(CIRCLED) else f"{k + 1}."
-                add_runs(doc_x.add_paragraph(), [(f"{marker} ", False)] + parse_inline(it))
+            # 파서가 보존한 원본 마커를 그대로 렌더한다 — 블록이 분절돼도 재번호하지
+            # 않아 원고(=배지) 번호와 항상 일치한다
+            for it in b["items"]:
+                add_runs(doc_x.add_paragraph(), [(f"{it['marker']} ", False)] + parse_inline(it["text"]))
         elif t == "table":
             rows = b["rows"]
             table = doc_x.add_table(rows=len(rows), cols=max(len(r) for r in rows))
@@ -177,7 +174,7 @@ def main():
     # 원고 사전 검증 게이트 (build_pptx 와 동일)
     if not args.skip_validate:
         import validate_draft
-        with open(args.draft, encoding="utf-8") as f:
+        with open(args.draft, encoding="utf-8-sig") as f:
             raw = f.read()
         errors, warns = validate_draft.validate(doc, draft_dir, shots_dir, raw_text=raw)
         for w in warns:

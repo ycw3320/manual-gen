@@ -202,20 +202,14 @@ def image_ratio(path):
 # ---------- 슬라이드 플랜 ----------
 
 def collect_items(blocks):
-    """블록들의 항목별 마커를 사전 계산해 (마커, 텍스트) 쌍으로 보존한다 — 불릿과
-    절차(1.2.3.)와 배지 대응(①②③)이 한 절에 공존해도 각자의 스타일·순번을 잃지 않게."""
+    """블록들의 항목을 (마커, 텍스트) 쌍으로 평탄화한다. numbered 는 파서가 보존한
+    원본 마커를 그대로 쓴다 — 블록이 분절돼도 재번호하지 않아 배지 번호와 일치한다."""
     items = []
-    counters = {"circled": 0, "decimal": 0}
     for b in blocks:
         if b["type"] == "bullets":
             items.extend(("•", t) for t in b["items"])
         elif b["type"] == "numbered":
-            style = b.get("style", "circled")
-            for t in b["items"]:
-                counters[style] += 1
-                n = counters[style]
-                marker = CIRCLED[n - 1] if style == "circled" and n <= len(CIRCLED) else f"{n}."
-                items.append((marker, t))
+            items.extend((it["marker"], it["text"]) for it in b["items"])
     return items
 
 
@@ -328,8 +322,10 @@ def sec_stack_height(sec):
             h += text_lines(plain(b["text"]), WIDE_EA) * STACK_ITEM
         elif b["type"] == "table":
             h += table_height_est(b["rows"], BODY_W.inches) + STACK_TABLE_PAD
-        elif b["type"] in ("bullets", "numbered"):
+        elif b["type"] == "bullets":
             h += sum(text_lines(plain(t), WIDE_EA) for t in b["items"]) * STACK_ITEM
+        elif b["type"] == "numbered":
+            h += sum(text_lines(plain(it["text"]), WIDE_EA) for it in b["items"]) * STACK_ITEM
     return h
 
 
@@ -756,7 +752,7 @@ def main():
     # 잘못된 구조로 산출되는 것을 생성 전에 막는다
     if not args.skip_validate:
         import validate_draft
-        with open(args.draft, encoding="utf-8") as f:
+        with open(args.draft, encoding="utf-8-sig") as f:
             raw = f.read()
         errors, warns = validate_draft.validate(doc, draft_dir, shots_dir, raw_text=raw)
         for w in warns:

@@ -2,9 +2,12 @@
 
 지원하는 원고 문법 (manual-template.md 규약의 마크다운 서브셋):
   # 제목 / > 메타 블록쿼트(제목 직후) / ## NN. 장 / ### x.y[.z] 절
-  본문 문단 / **접근 경로**: ... / ![SCR-ID](경로) + *[사진 N] 캡션*
+  본문 문단 / **접근 경로**: ... / ![SCR-ID](경로) + [사진 N] 캡션(별표 이탤릭 선택)
   > [스크린샷 필요: SCR-ID 화면명 — 경로] (placeholder)
   - 불릿 / 1. 번호 목록 / ① 원문자 목록 / ※ 주의 / | 표 | / --- 구분선
+
+numbered 블록의 items 는 {"marker", "text"} 로 원고의 실제 마커를 보존한다 —
+블록이 분절돼도 빌더가 재번호하지 않아 배지 번호(①②③)와 항상 일치한다.
 
 인라인 서식: **굵게** 는 (text, bold) run 으로 분해하고, 백틱은 제거한다 —
 빌더가 서식 객체로 처리하므로 마크다운 기호가 산출물에 남으면 안 되기 때문이다.
@@ -58,9 +61,26 @@ def png_size(path):
     return None
 
 
-PLACEHOLDER_RE = re.compile(r"\[스크린샷 필요:\s*(SCR-[\w-]+)\s+([^—\]]+?)\s*(?:—.*)?\]")
-CAPTION_RE = re.compile(r"^\*\[사진[^\]]*\][^*]*\*$")
+# 라우트 구분자는 공백으로 감싼 대시(— – -)만 인정한다 — 화면명 안의 하이픈 단어와 구분
+PLACEHOLDER_RE = re.compile(r"\[스크린샷 필요:\s*(SCR-[\w-]+)\s+([^\]]+?)\s*(?:\s[—–-]\s[^\]]*)?\]")
+# 캡션 별표(이탤릭)는 선택 — 이미지 직후 줄에서만 조회하므로 본문 오탐이 없다
+CAPTION_RE = re.compile(r"^\*?\[사진[^\]]*\][^*\n]*\*?$")
 CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
+
+
+def _is_structural(s):
+    """블록 시작 줄인가 — para/※주의 의 연속 줄 병합을 멈추는 기준."""
+    if s.startswith(("#", ">", "![", "|", "※")) or s == "---":
+        return True
+    if re.match(r"^[-*•]\s+", s) or re.match(r"^\d{1,2}\.\s+", s):
+        return True
+    if s[0] in CIRCLED:
+        return True
+    if re.match(r"^\*\*접근 경로\*\*", s):
+        return True
+    if CAPTION_RE.match(s):
+        return True
+    return False
 
 
 def _new_section(num, title):
@@ -73,7 +93,8 @@ def parse_draft(path):
     반환: {title, meta, chapters: [{num, title, intro, sections: [{num, title, blocks}]}]}
     block: {type: para|access|image|placeholder|bullets|numbered|note|table, ...}
     """
-    with open(path, encoding="utf-8") as f:
+    # utf-8-sig: Windows 편집기의 BOM 이 첫 줄 '# 제목' 인식을 깨는 것을 막는다
+    with open(path, encoding="utf-8-sig") as f:
         lines = f.read().splitlines()
 
     doc = {"title": "", "meta": "", "chapters": []}
@@ -124,19 +145,20 @@ def parse_draft(path):
 
         target = blocks()
         if target is None:
-            # 제목 직후의 블록쿼트는 메타(독자·버전·날짜)로 취급
-            if s.startswith(">") and not doc["meta"]:
-                doc["meta"] = plain(s.lstrip("> ").strip())
+            # 제목 직후(첫 장 선언 이전)의 블록쿼트만 메타(독자·버전·날짜)로 취급.
+            # 여러 줄이면 ' · ' 로 병합한다 — parse_meta 가 · 구분 파트를 순회하므로 호환
+            if s.startswith(">"):
+                part = plain(s.lstrip("> ").strip())
+                doc["meta"] = f"{doc['meta']} · {part}" if doc["meta"] else part
             i += 1
             continue
 
         if s.startswith(">"):
+            # 장 시작 이후의 블록쿼트는 placeholder 아니면 본문이다 — 메타로 흡수하지 않는다
             body = s.lstrip("> ").strip()
             pm = PLACEHOLDER_RE.search(body)
             if pm:
                 target.append({"type": "placeholder", "scr": pm.group(1), "name": pm.group(2).strip()})
-            elif not doc["meta"] and not target:
-                doc["meta"] = plain(body)
             else:
                 target.append({"type": "para", "text": body})
             i += 1
@@ -159,7 +181,8 @@ def parse_draft(path):
             rows = []
             while i < n and lines[i].strip().startswith("|"):
                 cells = [plain(c.strip()) for c in lines[i].strip().strip("|").split("|")]
-                if not all(re.fullmatch(r":?-{2,}:?", c or "-") for c in cells):
+                # 구분선은 대시 1개(|-|-|)도 GFM 유효 문법 — 전 셀이 대시일 때만 걸러낸다
+                if not all(re.fullmatch(r":?-+:?", c or "-") for c in cells):
                     rows.append(cells)
                 i += 1
             if rows:
@@ -181,22 +204,24 @@ def parse_draft(path):
             target.append({"type": "bullets", "items": items})
             continue
 
-        if re.match(r"^\d+\.\s+", s) or (s and s[0] in CIRCLED):
+        # 십진은 1~2자리로 제한 — '2026. 7. 1.' 같은 날짜 문단의 목록 오분류를 막는다
+        if re.match(r"^\d{1,2}\.\s+", s) or (s and s[0] in CIRCLED):
             items = []
             # 십진(1. 2. — 절차 단계)과 원문자(① — 배지 대응)는 렌더 시 구분되어야 하므로
-            # 시작 마커의 스타일을 보존한다
-            style = "decimal" if re.match(r"^\d+\.\s+", s) else "circled"
+            # 시작 마커의 스타일을 보존한다. 항목별 원본 마커도 보존한다 — 블록이
+            # 분절되어도 빌더가 재번호하지 않고 원고(=배지) 번호를 그대로 렌더하게.
+            style = "decimal" if re.match(r"^\d{1,2}\.\s+", s) else "circled"
             while i < n:
                 t = lines[i].strip()
-                mm = re.match(r"^\d+\.\s+(.*)$", t)
+                mm = re.match(r"^(\d{1,2})\.\s+(.*)$", t)
                 if mm:
-                    items.append(mm.group(1))
+                    items.append({"marker": f"{mm.group(1)}.", "text": mm.group(2)})
                     i += 1
                 elif t and t[0] in CIRCLED:
-                    items.append(t[1:].strip())
+                    items.append({"marker": t[0], "text": t[1:].strip()})
                     i += 1
                 elif t and lines[i].startswith(("  ", "\t")):
-                    items[-1] += " " + t
+                    items[-1]["text"] += " " + t
                     i += 1
                 else:
                     break
@@ -204,8 +229,13 @@ def parse_draft(path):
             continue
 
         if s.startswith("※"):
-            target.append({"type": "note", "text": s})
+            # 하드랩된 ※ 항목은 다음 블록 시작 전까지 한 항목으로 병합한다
+            buf = [s]
             i += 1
+            while i < n and lines[i].strip() and not _is_structural(lines[i].strip()):
+                buf.append(lines[i].strip())
+                i += 1
+            target.append({"type": "note", "text": " ".join(buf)})
             continue
 
         m = re.match(r"^\*\*접근 경로\*\*\s*[::]\s*(.*)$", s)
@@ -214,8 +244,14 @@ def parse_draft(path):
             i += 1
             continue
 
-        target.append({"type": "para", "text": s})
+        # 일반 문단 — 하드랩된 연속 줄은 빈 줄/다음 블록 전까지 한 문단으로 병합한다.
+        # 줄 단위로 쪼개면 문장 순서 재배치·볼드 쌍(**) 절단이 생기기 때문이다.
+        buf = [s]
         i += 1
+        while i < n and lines[i].strip() and not _is_structural(lines[i].strip()):
+            buf.append(lines[i].strip())
+            i += 1
+        target.append({"type": "para", "text": " ".join(buf)})
 
     return doc
 

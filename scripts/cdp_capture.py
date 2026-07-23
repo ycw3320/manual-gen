@@ -4,15 +4,22 @@
 
 주요 기능:
   - 로그인 3단계: A 세션 재사용 → B 환경변수 자동 로그인 → C 직접 로그인 요청(exit 3)
-    판정은 "안정화된 최종 URL이 로그인 경로 패턴과 매치"로 수행한다
-    (보이는 password 입력란 단독 판정은 API 키 입력란 등에서 오탐하므로 쓰지 않는다)
+    판정은 "안정화된 최종 URL의 경로(path)가 로그인 세그먼트 패턴과 매치"로 수행한다
+    (/security/author/ 같은 부분문자열 오탐을 막기 위해 경로 세그먼트 경계로만 매치.
+    보이는 password 입력란 단독 판정은 API 키 입력란 등에서 오탐하므로 쓰지 않는다)
   - 배지 좌표 자동 산출(--mark): CSS 셀렉터별 위치를 상대 좌표로 계산해
-    <out>.markers.json 저장 → annotate_screenshot.py --markers-file 입력으로 사용
-  - PII 블러(--redact-file/--redact-email): 캡처 직전 매칭 텍스트/이미지에 blur 적용.
-    가릴 문자열은 파일로만 받는다 — CLI 인자로 받으면 셸 기록에 PII가 남기 때문이다
+    <out>.markers.json 저장(대상 이미지·좌표계 치수·DPR 메타 포함)
+    → annotate_screenshot.py --markers-file 입력으로 사용
+  - PII 블러(--redact-file/--redact-email): 캡처 직전 매칭 텍스트·이미지·폼 입력값
+    (input/textarea/select)에 blur 적용. 가릴 문자열은 파일로만 받는다 —
+    CLI 인자로 받으면 셸 기록에 PII가 남기 때문이다
+  - 본문 텍스트 저장(--dump-text 기본 활성): 화면 innerText 를 <out>.text.txt 로 저장
+    (redact 목록·이메일은 마스킹) — 원고의 [라벨] 표기를 실제 화면과 기계 대조하는 원자재
   - 에러 화면 감지: 프레임워크 에러 오버레이·HTTP 4xx/5xx·빈 본문이면 저장하지 않는다
   - 브라우저 검증(--expect-browser): 연결된 브라우저가 config의 캡처 브라우저와 다르면 중단
-  - 재개 가속(--skip-existing): 이미 캡처된 파일이 있으면 건너뛴다
+  - 재개 가속(--skip-existing): 이미 캡처된 파일이 있으면 건너뛴다.
+    단 --mark 셀렉터 구성이 저장된 markers.json 과 다르면 재캡처한다
+  - iframe 감지: 프레임이 여럿이면 블러·배지·에러감지가 최상위 프레임에만 적용됨을 경고
 
 사용 예:
   python cdp_capture.py --list-tabs --port 9222
@@ -30,6 +37,7 @@ import os
 import re
 import sys
 import urllib.request
+from urllib.parse import urlsplit
 
 # Windows 콘솔(CP949)에서 한글 출력이 깨지지 않도록 UTF-8로 고정
 if hasattr(sys.stdout, "reconfigure"):
@@ -77,6 +85,19 @@ def stable_url(page, wait_ms: int) -> str:
             return cur
         last = cur
     return last
+
+
+def is_login_url(final_url: str, args, login_re) -> bool:
+    """미로그인 판정 — URL 전체가 아닌 경로(path)에 매치한다.
+
+    /security/author/list.do, /log/selectLoginLog.do, ?author=... 같은
+    부분문자열 오탐을 막는다. --login-url 이 지정되면 경로 일치를 우선 판정한다."""
+    path = urlsplit(final_url).path
+    if args.login_url:
+        lp = urlsplit(args.login_url).path.rstrip("/")
+        if lp and path.rstrip("/") == lp:
+            return True
+    return bool(login_re.search(path))
 
 
 def visible_password_field(page):
@@ -163,8 +184,11 @@ def detect_error_page(page, min_chars: int):
     return None
 
 
-def apply_redact(page, args) -> int:
-    """매칭 텍스트 노드·이미지에 blur 를 적용한다. 반환: 적용 요소 수."""
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
+
+
+def load_redact_lists(args):
+    """redact 대상/예외 문자열 목록을 파일에서 읽는다. 반환: (terms, allow)."""
     terms = []
     if args.redact_file:
         if not os.path.exists(args.redact_file):
@@ -175,7 +199,14 @@ def apply_redact(page, args) -> int:
     if args.redact_allow_file and os.path.exists(args.redact_allow_file):
         with open(args.redact_allow_file, encoding="utf-8") as f:
             allow = [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
-    if not terms and not args.redact_email:
+    return terms, allow
+
+
+def apply_redact(page, terms, allow, email: bool) -> int:
+    """매칭 텍스트 노드·이미지·폼 입력값(input/textarea/select)에 blur 를 적용한다.
+    반환: 적용 요소 수. 폼 값은 텍스트 노드가 아니므로 별도 순회가 필요하다 —
+    등록·수정 화면의 실명·연락처가 블러 없이 노출되는 것을 막는다."""
+    if not terms and not email:
         return 0
 
     count = page.evaluate(
@@ -197,18 +228,41 @@ def apply_redact(page, args) -> int:
             const meta = (img.alt || '') + ' ' + (img.src || '');
             if (hit(meta) && !isAllowed(meta)) targets.add(img);
           });
+          document.querySelectorAll('input:not([type=password]), textarea, select').forEach(el => {
+            let v = el.value || '';
+            if (el.tagName === 'SELECT') {
+              const o = el.selectedOptions && el.selectedOptions[0];
+              v = o ? o.textContent : '';
+            }
+            if (hit(v) && !isAllowed(v)) targets.add(el);
+          });
           targets.forEach(el => { if (el) el.style.filter = 'blur(8px)'; });
           return targets.size;
         }""",
-        {"terms": terms, "email": bool(args.redact_email), "allow": allow},
+        {"terms": terms, "email": email, "allow": allow},
     )
     return count or 0
+
+
+def masked_body_text(page, terms, allow, email: bool) -> str:
+    """본문 innerText 를 추출하되 redact 대상 문자열·이메일은 마스킹한다 —
+    blur 는 시각 효과일 뿐 텍스트에는 원문이 남기 때문이다."""
+    text = page.evaluate("document.body ? document.body.innerText : ''") or ""
+    for t in terms:
+        if t:
+            text = text.replace(t, "■■")
+    if email:
+        text = EMAIL_RE.sub(
+            lambda m: m.group() if any(a and a in m.group() for a in allow) else "■■@■■", text)
+    return text
 
 
 def compute_markers(page, selectors, full_page: bool):
     """셀렉터별 배지 좌표와 요소 영역(0~1 상대)을 산출한다.
 
     x,y = 요소 좌상단(배지 위치), w,h = 요소 크기(강조 테두리 박스용).
+    반환: (markers, frame) — frame 은 좌표계의 CSS px 치수와 DPR.
+    annotate 단계가 대상 이미지 치수와 대조해 stale/오페어링을 잡는 근거가 된다.
     """
     data = page.evaluate(
         """(sels) => {
@@ -217,7 +271,8 @@ def compute_markers(page, selectors, full_page: bool):
           const fullH = Math.max(doc.scrollHeight, doc.clientHeight);
           const vw = window.innerWidth, vh = window.innerHeight;
           const sx = window.scrollX, sy = window.scrollY;
-          return sels.map((sel, i) => {
+          return { fullW, fullH, vw, vh, dpr: window.devicePixelRatio || 1,
+            items: sels.map((sel, i) => {
             const el = document.querySelector(sel);
             if (!el) return { n: i + 1, selector: sel, found: false };
             const r = el.getBoundingClientRect();
@@ -225,12 +280,12 @@ def compute_markers(page, selectors, full_page: bool):
               vx: r.left / vw, vy: r.top / vh, vw2: r.width / vw, vh2: r.height / vh,
               dx: (r.left + sx) / fullW, dy: (r.top + sy) / fullH,
               dw: r.width / fullW, dh: r.height / fullH };
-          });
+          }) };
         }""",
         selectors,
     )
     markers = []
-    for m in data:
+    for m in data["items"]:
         if not m["found"]:
             markers.append({"n": m["n"], "selector": m["selector"], "found": False})
             continue
@@ -243,7 +298,11 @@ def compute_markers(page, selectors, full_page: bool):
             "n": m["n"], "selector": m["selector"], "found": True,
             "x": clamp(x), "y": clamp(y), "w": clamp(w), "h": clamp(h),
         })
-    return markers
+    if full_page:
+        frame = {"w": data["fullW"], "h": data["fullH"], "dpr": data["dpr"]}
+    else:
+        frame = {"w": data["vw"], "h": data["vh"], "dpr": data["dpr"]}
+    return markers, frame
 
 
 def main():
@@ -252,7 +311,9 @@ def main():
     ap.add_argument("--out", help="저장할 PNG 경로")
     ap.add_argument("--port", type=int, default=9222, help="브라우저 디버그 포트 (기본 9222)")
     ap.add_argument("--full-page", action="store_true", help="스크롤 전체(풀페이지) 캡처")
-    ap.add_argument("--viewport", help="캡처 전 뷰포트 크기 지정 (예: 1600x1080)")
+    ap.add_argument("--viewport", default="1600x1080",
+                    help="캡처 전 뷰포트 크기 (기본 1600x1080 — PC·실행마다 창 크기가 달라 "
+                         "문서 간 렌더가 흔들리는 것을 막는 표준값). 'none' 이면 현재 창 크기 유지")
     ap.add_argument("--hide-scrollbars", action="store_true", help="스크롤바를 숨기고 캡처")
     ap.add_argument("--wait-selector", help="캡처 전 나타나기를 기다릴 CSS 셀렉터")
     ap.add_argument("--wait-ms", type=int, default=800, help="로드 후 추가 대기(ms, 기본 800)")
@@ -276,10 +337,15 @@ def main():
     ap.add_argument("--redact-file", help="가릴 문자열 목록 파일(한 줄당 1개). CLI 인자로 PII를 받지 않는다")
     ap.add_argument("--redact-email", action="store_true", help="이메일 주소 패턴을 자동 블러")
     ap.add_argument("--redact-allow-file", help="블러 예외(화이트리스트) 문자열 목록 파일")
+    # 본문 텍스트 저장 (라벨 대조 게이트의 원자재)
+    ap.add_argument("--no-dump-text", dest="dump_text", action="store_false",
+                    help="본문 innerText(<out>.text.txt) 저장을 끈다 (기본: 저장)")
     # 자동 로그인
     ap.add_argument("--login-url", help="로그인 페이지 URL (미로그인 감지 시 이동)")
-    ap.add_argument("--login-url-pattern", default=r"login|signin|auth",
-                    help="미로그인 판정용 URL 정규식 (기본 login|signin|auth)")
+    ap.add_argument("--login-url-pattern",
+                    default=r"(?:^|/)(login|log[-_]?in|signin|sign[-_]?in|signon|auth)(?:/|$|\.)",
+                    help="미로그인 판정용 정규식 — URL 경로(path)에 적용 (기본: 세그먼트 경계의 "
+                         "login/signin/auth 계열)")
     ap.add_argument("--redirect-wait-ms", type=int, default=3000, help="리다이렉트 안정화 대기(ms)")
     ap.add_argument("--id-selector", help="아이디 입력란 CSS 셀렉터")
     ap.add_argument("--pw-selector", help="비밀번호 입력란 CSS 셀렉터")
@@ -293,14 +359,28 @@ def main():
         fail("--out <png 경로> 가 필요합니다 (--list-tabs 모드가 아닌 경우)")
 
     # 재개 가속: 연결 전에 판정해 이미 캡처된 화면은 브라우저를 건드리지 않는다.
-    # 단 --mark 지정인데 markers.json이 없으면 스킵하지 않는다 — 배지 좌표 없이 스킵되면
-    # annotate 단계가 막히기 때문이다.
+    # 단 --mark 지정인데 markers.json이 없거나, 저장된 셀렉터 구성이 현재 --mark 와
+    # 다르면 스킵하지 않는다 — 옛 배지 좌표가 무음 재사용되면 본문(①~⑤ 설명)과
+    # 이미지(배지 3개)가 어긋난 산출물이 나오기 때문이다.
     if args.skip_existing and args.out and os.path.exists(args.out) and os.path.getsize(args.out) >= args.min_bytes:
         mpath = os.path.splitext(args.out)[0] + ".markers.json"
-        if not args.mark or os.path.exists(mpath):
+        if not args.mark:
             print(f"[cdp_capture] skip: 이미 존재 ({args.out}, {os.path.getsize(args.out)} bytes)")
             return
-        print("[cdp_capture] 캡처본은 있으나 markers.json이 없어 재캡처합니다")
+        if os.path.exists(mpath):
+            try:
+                with open(mpath, encoding="utf-8") as f:
+                    saved = [m.get("selector") for m in json.load(f).get("markers", [])]
+            except (OSError, ValueError):
+                saved = None
+            current = [s.strip() for s in args.mark.split(";") if s.strip()]
+            if saved == current:
+                print(f"[cdp_capture] skip: 이미 존재 ({args.out}, {os.path.getsize(args.out)} bytes)")
+                return
+            print("[cdp_capture] 배지 구성 변경 감지(저장된 markers.json 셀렉터와 불일치) — "
+                  "재캡처합니다. 이미지는 재사용하고 좌표만 갱신하려면 --mark-only 를 쓰세요")
+        else:
+            print("[cdp_capture] 캡처본은 있으나 markers.json이 없어 재캡처합니다")
 
     try:
         from playwright.sync_api import sync_playwright
@@ -340,12 +420,12 @@ def main():
         page = context.pages[0] if context.pages else context.new_page()
         page.set_default_timeout(args.timeout)
 
-        if args.viewport:
+        if args.viewport and args.viewport.lower() != "none":
             try:
                 w, h = (int(v) for v in args.viewport.lower().split("x"))
                 page.set_viewport_size({"width": w, "height": h})
             except ValueError:
-                fail(f"--viewport 형식 오류: '{args.viewport}' (예: 1600x1080)")
+                fail(f"--viewport 형식 오류: '{args.viewport}' (예: 1600x1080, 창 크기 유지는 none)")
 
         response = None
         if args.url:
@@ -354,11 +434,11 @@ def main():
             except Exception as e:
                 fail(f"페이지 이동 실패: {args.url} (원인: {e})")
 
-        # 로그인 판정: 안정화된 최종 URL이 로그인 경로 패턴과 매치하면 미로그인
+        # 로그인 판정: 안정화된 최종 URL의 경로가 로그인 세그먼트 패턴과 매치하면 미로그인
         if not args.no_login:
             login_re = re.compile(args.login_url_pattern, re.I)
             final_url = stable_url(page, args.redirect_wait_ms)
-            if login_re.search(final_url):
+            if is_login_url(final_url, args, login_re):
                 if not try_auto_login(page, args):
                     fail(
                         f"로그인이 필요합니다 (현재 URL: {final_url}). 무개입 실행을 원하면 환경변수 "
@@ -368,7 +448,7 @@ def main():
                 if args.url:
                     response = page.goto(args.url, wait_until="load")  # 상태 검사도 로그인 후 응답 기준
                 final_url = stable_url(page, args.redirect_wait_ms)
-                if login_re.search(final_url):
+                if is_login_url(final_url, args, login_re):
                     fail(
                         f"자동 로그인 후에도 로그인 페이지에 머뭅니다 (URL: {final_url}) — 셀렉터 불일치 "
                         "또는 추가 인증(SSO/2FA). 캡처 프로필 브라우저 창에서 직접 로그인 후 재시도하세요.",
@@ -396,26 +476,38 @@ def main():
         if args.hide_scrollbars:
             page.add_style_tag(content="::-webkit-scrollbar{display:none !important} html{scrollbar-width:none}")
 
+        # iframe 화면: 블러·배지·에러감지·텍스트 추출이 최상위 프레임에만 적용된다 —
+        # 레거시(iframe 본문) 시스템에서 무음 누락되지 않도록 명시 경고를 남긴다
+        if len(page.frames) > 1:
+            print(f"[cdp_capture] 경고: iframe {len(page.frames) - 1}개 감지 — PII 블러·배지 좌표·"
+                  "에러 감지·본문 텍스트는 최상위 프레임에만 적용됩니다. iframe 내부는 수동 확인 필요",
+                  file=sys.stderr)
+
+        terms, allow = load_redact_lists(args)
         if args.redact_file or args.redact_email:
-            n = apply_redact(page, args)
+            n = apply_redact(page, terms, allow, bool(args.redact_email))
             print(f"[cdp_capture] PII 블러 적용: {n}개 요소")
 
-        markers = None
+        markers = frame = None
         if args.mark:
             selectors = [s.strip() for s in args.mark.split(";") if s.strip()]
-            markers = compute_markers(page, selectors, args.full_page)
+            markers, frame = compute_markers(page, selectors, args.full_page)
             for m in markers:
                 if not m["found"]:
                     print(f"[cdp_capture] 경고: 배지 {m['n']} 셀렉터 미발견 — {m['selector']}", file=sys.stderr)
+
+        def save_markers(mpath):
+            with open(mpath, "w", encoding="utf-8") as f:
+                json.dump({"image": os.path.basename(args.out), "full_page": args.full_page,
+                           "frame_w": frame["w"], "frame_h": frame["h"], "dpr": frame["dpr"],
+                           "markers": markers}, f, ensure_ascii=False, indent=1)
+            return sum(1 for m in markers if m["found"])
 
         if args.mark_only:
             if markers is None:
                 fail("--mark-only 에는 --mark 셀렉터 목록이 필요합니다")
             mpath = os.path.splitext(args.out)[0] + ".markers.json"
-            with open(mpath, "w", encoding="utf-8") as f:
-                json.dump({"image": os.path.basename(args.out), "full_page": args.full_page,
-                           "markers": markers}, f, ensure_ascii=False, indent=1)
-            found = sum(1 for m in markers if m["found"])
+            found = save_markers(mpath)
             print(f"[cdp_capture] 배지 좌표만 저장(캡처 생략): {mpath} (산출 {found}/{len(markers)})")
             return
 
@@ -426,11 +518,17 @@ def main():
 
         if markers is not None:
             mpath = os.path.splitext(args.out)[0] + ".markers.json"
-            with open(mpath, "w", encoding="utf-8") as f:
-                json.dump({"image": os.path.basename(args.out), "full_page": args.full_page,
-                           "markers": markers}, f, ensure_ascii=False, indent=1)
-            found = sum(1 for m in markers if m["found"])
+            found = save_markers(mpath)
             print(f"[cdp_capture] 배지 좌표 저장: {mpath} (산출 {found}/{len(markers)})")
+
+        if args.dump_text:
+            tpath = os.path.splitext(args.out)[0] + ".text.txt"
+            try:
+                with open(tpath, "w", encoding="utf-8") as f:
+                    f.write(masked_body_text(page, terms, allow, bool(args.redact_email)))
+                print(f"[cdp_capture] 본문 텍스트 저장: {tpath}")
+            except Exception as e:
+                print(f"[cdp_capture] 경고: 본문 텍스트 저장 실패 — {e}", file=sys.stderr)
 
         print(f"[cdp_capture] 저장 완료: {args.out} (full_page={args.full_page})")
 

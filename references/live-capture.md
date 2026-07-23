@@ -81,15 +81,22 @@ claude-in-chrome이 없거나 풀페이지 캡처가 필요할 때. 사용자의
     --full-page --hide-scrollbars --skip-existing --expect-browser chrome \
     --mark "form.search;table#list;button.submit" --port 9222
   ```
-  - `--full-page`: 긴 화면의 하단 잘림을 막는 기본 선택지. 뷰포트 캡처가 필요하면
-    `--viewport 1600x1080` 으로 사이드바·표가 잘리지 않는 크기를 지정한다.
+  - `--full-page`: 긴 화면의 하단 잘림을 막는 기본 선택지.
   - **뷰포트 통일**: 한 매뉴얼의 모든 캡처는 **동일한 뷰포트 크기**로 찍는다 — 이미지
     비율이 제각각이면 문서의 고정 프레임 안에서도 렌더 크기가 달라 보이기 때문이다.
-    시작 시 정한 뷰포트를 config.md에 기록하고 전 화면에 같은 값을 쓴다
-    (풀페이지 캡처가 섞이는 화면은 예외로 두되 최소화).
+    `--viewport` 미지정 시 표준값 **1600x1080**이 자동 적용되므로 창 크기와 무관하게
+    일관된다. 다른 값을 쓰면 config.md에 기록하고 전 화면에 같은 값을 명시한다
+    (현재 창 크기를 그대로 쓰려면 `--viewport none` — 비결정적이므로 권장하지 않음).
   - `--hide-scrollbars`: 스크롤바 썸이 UI 요소처럼 찍히는 것을 막는다.
   - `--skip-existing`: 이미 캡처된 화면은 건너뛴다 — 중단·재실행 시 inventory 순서대로
-    전체 명령을 다시 돌려도 완료분은 스킵되므로 재개가 빨라진다.
+    전체 명령을 다시 돌려도 완료분은 스킵되므로 재개가 빨라진다. 저장된 markers.json
+    의 셀렉터와 현재 `--mark` 구성이 다르면 스킵하지 않고 재캡처한다(옛 배지 무음
+    재사용 방지).
+  - 캡처 성공 시 화면 본문 텍스트가 `<이름>.text.txt` 로 함께 저장된다(redact 대상은
+    마스킹) — validate_draft 가 본문 [라벨] 표기를 실제 화면과 대조하는 원자재다
+    (끄려면 `--no-dump-text`).
+  - 본문이 iframe 에 그려지는 시스템은 경고가 출력된다 — 블러·배지 좌표·에러 감지가
+    최상위 프레임에만 적용되므로 iframe 내부 PII·요소는 수동 확인한다.
   - `--expect-browser`: §0의 브라우저 정책을 기계적으로 강제한다 (불일치 시 종료 코드 5).
   - `--mark "셀렉터;셀렉터;..."`: 배지 좌표 자동 산출(§3).
   - `--wait-selector "table tbody tr"`: 데이터 로딩 대기.
@@ -108,20 +115,27 @@ claude-in-chrome이 없거나 풀페이지 캡처가 필요할 때. 사용자의
 | B. 자동 로그인 | 환경변수 `WUM_LOGIN_ID`/`WUM_LOGIN_PW`가 있으면 스크립트가 직접 폼을 채워 로그인 | 없음 |
 | C. 직접 로그인 | A·B 불가 시 종료 코드 3 → 사용자에게 캡처 프로필 브라우저 창에서 직접 로그인 요청 후 재시도 | 1회 |
 
-미로그인 판정은 **"리다이렉트가 안정된 최종 URL이 로그인 경로 패턴(`login|signin|auth`,
-`--login-url-pattern`으로 변경 가능)과 매치"** 방식이다 — 보이는 password 입력란으로
+미로그인 판정은 **"리다이렉트가 안정된 최종 URL의 경로(path)가 로그인 세그먼트
+패턴과 매치"** 방식이다 — 경로 세그먼트 경계로만 매치하므로 `/security/author/`,
+`/log/selectLoginLog.do` 같은 부분문자열 오탐이 없다. 보이는 password 입력란으로
 판정하지 않는다(설정 화면의 API 키 입력란 등 password 타입 필드가 미로그인으로
-오탐되기 때문이다). 로그인 경로가 패턴과 다른 시스템은 `--login-url-pattern`을 지정한다.
+오탐되기 때문이다). 로그인 경로가 표준 패턴(login/signin/auth 계열 세그먼트) 밖인
+시스템(예: eGov 의 `/uat/uia/egovLoginUsr.do`)은 **`--login-url` 을 지정**하면 그
+경로와의 일치가 우선 판정된다(`--login-url-pattern` 으로 패턴 자체 교체도 가능).
 리다이렉트 없이 제자리에 로그인 폼을 그리는 시스템은 URL 판정이 불가하므로 캡처본을
 확인해 로그인 폼이 찍혔으면 C 단계로 처리한다.
 
-- B를 쓰려면 실행 전 환경변수를 설정한다. 값이 대화·로그·파일에 남지 않도록
-  **현재 세션 한정** 설정을 기본으로 한다 (사용자가 직접 입력하게 안내):
+- B를 쓰려면 실행 전 환경변수를 설정한다. 값이 셸 히스토리에 남지 않도록
+  **Read-Host 입력** 방식을 기본으로 안내한다 (현재 세션 한정):
   ```powershell
-  $env:WUM_LOGIN_ID = "계정아이디"; $env:WUM_LOGIN_PW = "비밀번호"
+  $env:WUM_LOGIN_ID = Read-Host "아이디"
+  $env:WUM_LOGIN_PW = Read-Host "비밀번호"
   ```
-  영구 설정(`setx`)은 레지스트리에 평문 저장되므로 사용자가 그 트레이드오프를
-  이해한 경우에만 안내한다.
+  **주의**: 값을 명령줄에 직접 쓰면(`$env:WUM_LOGIN_PW = "비밀번호"`) PSReadLine
+  히스토리(`%APPDATA%\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`)
+  에 평문으로 남는다 — Read-Host 입력값은 히스토리에 남지 않는다. 이미 직접 입력한
+  적이 있으면 해당 파일에서 그 줄을 삭제하도록 안내한다. 영구 설정(`setx`)은
+  레지스트리에 평문 저장되므로 사용자가 그 트레이드오프를 이해한 경우에만 안내한다.
 - 폼 구조가 표준적이지 않으면 셀렉터를 지정한다:
   `--login-url <로그인페이지>` `--id-selector "#userId"` `--pw-selector "#userPw"`
   `--submit-selector "button[type=submit]"` (미지정 시: 보이는 text/email 입력란 +

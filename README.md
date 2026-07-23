@@ -160,7 +160,8 @@ scripts/
 ├── validate_draft.py           # 원고 사전 린터 — 구조 위반을 빌드 전에 차단
 ├── check_env.py                # 환경 점검(doctor) — 의존성·브라우저·가능 경로 확인
 ├── build_pptx.py               # 원고→PPTX (표지/목차/고정 프레임·테두리·분할·자체 검증)
-└── build_docx.py               # 원고→DOCX (표지/자동 목차/헤딩/이미지 테두리/캡션/페이지 번호)
+├── build_docx.py               # 원고→DOCX (표지/자동 목차/헤딩/이미지 테두리/캡션/페이지 번호)
+└── export_slides.ps1           # pptx→슬라이드별 PNG (렌더 검수용 — PowerPoint COM/soffice)
 ```
 
 주요 동작 원칙: 하이브리드 분석(소스+라이브, 한쪽만으로도 동작) · 독자 영역 자동

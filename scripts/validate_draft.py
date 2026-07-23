@@ -6,9 +6,11 @@ build_pptx.py / build_docx.py 가 시작 시 자동 호출한다 (--skip-validat
 
 심각도:
   ERROR — 산출물 구조를 깨뜨리는 위반 (빌드 중단): 장 없음, 사진 번호 중복,
-          이미지 파일 부재(placeholder 가 아닌데 파일이 없음)
+          이미지 파일 부재(placeholder 가 아닌데 파일이 없음), 존재하지 않는
+          [사진 N] 본문 참조, placeholder 문법 오류로 인한 작업 메모 본문 유출
   WARN  — 규약 이탈이지만 산출은 가능 (보고만): 부모 절 부재, 화면 절의 접근 경로
-          누락, 사진 번호 비연속, 미확정 마킹 잔존
+          누락, 사진 번호 비연속, 미확정 마킹 잔존, 캡션 누락, 목록 분절 의심,
+          문단 파편화 의심, 화면 텍스트(text.txt)에 없는 본문 [라벨]
 
 사용 예:
   python validate_draft.py --draft manual-work/manual-draft.md \
@@ -27,10 +29,22 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import parse_draft, resolve_image
+from draft_parser import parse_draft, plain, resolve_image
 
 UNRESOLVED_RE = re.compile(r"확인 필요|확정 전|TBD|미정")
 PHOTO_NO_RE = re.compile(r"\[사진\s*(\d+)\]")
+LABEL_RE = re.compile(r"\[([^\[\]\n]+)\]")
+
+
+def _block_texts(b):
+    """텍스트 검사 대상 블록의 문자열 목록 (para/note/bullets/numbered)."""
+    if b["type"] == "bullets":
+        return b["items"]
+    if b["type"] == "numbered":
+        return [it["text"] for it in b["items"]]
+    if b["type"] in ("para", "note"):
+        return [b.get("text", "")]
+    return []
 # 최종 독자용 문서에 남으면 안 되는 개발 용어 — 문체 린트 (manual-template.md 3절)
 # \b 는 한글을 단어 문자로 취급해 "API를"을 놓치므로 ASCII 경계로 검사한다
 TECH_TERMS_RE = re.compile(
@@ -89,6 +103,35 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
                     photo_nos.append(int(m.group(1)))
                 elif cap:
                     warns.append(f"[{label}] 캡션에 [사진 N] 번호가 없습니다: {cap[:30]}")
+                else:
+                    warns.append(f"[{label}] 이미지에 캡션이 없습니다 — 이미지 바로 다음 줄에 "
+                                 f"[사진 N] 화면명 을 붙일 것: {img['src']}")
+
+            # 이미지 직후 '[사진'으로 시작하는 문단 — 캡션이 형식 이탈로 본문 처리된 잔재
+            for bi, b in enumerate(blocks):
+                if b["type"] == "image" and bi + 1 < len(blocks):
+                    nxt = blocks[bi + 1]
+                    if nxt["type"] == "para" and nxt.get("text", "").lstrip("*").startswith("[사진"):
+                        warns.append(f"[{label}] 이미지 직후 '[사진'으로 시작하는 문단 — 캡션이 "
+                                     f"본문으로 처리된 형식 오류 의심: {nxt['text'][:30]}")
+
+            # 같은 스타일 numbered 블록이 사이에 다른 블록 없이 연속 — 빈 줄 분절 의심
+            for bi in range(len(blocks) - 1):
+                a, b2 = blocks[bi], blocks[bi + 1]
+                if (a["type"] == b2["type"] == "numbered"
+                        and a.get("style") == b2.get("style")):
+                    warns.append(f"[{label}] 같은 스타일의 번호 목록이 빈 줄로 분절되어 있습니다 "
+                                 "— 한 절차면 빈 줄을 제거할 것 (마커는 원고 그대로 렌더됨)")
+
+            # 연속 para 에서 앞 문단이 종결부 없이 끝남 — 파편화 의심
+            for bi in range(len(blocks) - 1):
+                a, b2 = blocks[bi], blocks[bi + 1]
+                if a["type"] == b2["type"] == "para":
+                    t = a.get("text", "").rstrip()
+                    if t and not (t[-1] in ".:;)]…!?" or
+                                  t.endswith(("다", "요", "함", "음", "됨", "임", "것"))):
+                        warns.append(f"[{label}] 문단 파편화 의심 — 앞 문단이 문장 중간에서 "
+                                     f"끝납니다: {t[-25:]}")
 
     # 사진 번호: 중복은 ERROR(참조가 어긋난다), 비연속은 WARN
     dup = sorted({n for n in photo_nos if photo_nos.count(n) > 1})
@@ -98,6 +141,71 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
         expected = list(range(min(photo_nos), min(photo_nos) + len(photo_nos)))
         if sorted(photo_nos) != expected:
             warns.append(f"[사진 N] 번호가 비연속입니다: {sorted(photo_nos)}")
+
+    # 본문 [사진 N] 상호참조 무결성 — 존재하지 않는 사진 참조는 산출물에서 허공을
+    # 가리킨다. placeholder 가 남아 있으면 캡처 후 채워질 번호일 수 있어 WARN 강등
+    has_ph = any(b["type"] == "placeholder" for ch in doc["chapters"]
+                 for sec in ch["sections"] for b in sec["blocks"])
+    cap_set = set(photo_nos)
+    for ch in doc["chapters"]:
+        for sec in ch["sections"]:
+            for b in sec["blocks"]:
+                for t in _block_texts(b):
+                    for m in PHOTO_NO_RE.finditer(t):
+                        no = int(m.group(1))
+                        if no not in cap_set:
+                            msg = (f"[{sec['num']} {sec['title']}] 본문이 [사진 {no}] 을 "
+                                   f"참조하지만 해당 캡션이 없습니다: {t[:40]}")
+                            (warns if has_ph else errors).append(msg)
+
+    # placeholder 문법 유출 — '스크린샷 필요' 줄 수와 파싱된 placeholder 수가 다르면
+    # SCR-ID 누락·구분자 오류로 작업 메모가 본문 문단으로 새고 있는 것이다
+    if raw_text:
+        ph_lines = sum(1 for ln in raw_text.splitlines() if "스크린샷 필요" in ln)
+        ph_parsed = sum(1 for ch in doc["chapters"]
+                        for blks in [ch["intro"]] + [s["blocks"] for s in ch["sections"]]
+                        for b in blks if b["type"] == "placeholder")
+        if ph_lines != ph_parsed:
+            errors.append(f"placeholder 문법 오류 의심: '스크린샷 필요' {ph_lines}줄 중 "
+                          f"{ph_parsed}건만 인식 — [스크린샷 필요: SCR-ID 화면명 — 경로] "
+                          "형식(SCR-ID·구분자)을 확인할 것 (작업 메모가 본문에 유출됩니다)")
+
+    # 본문 [라벨] ↔ 캡처 화면 텍스트 대조 — cdp_capture --dump-text 산출물(text.txt)이
+    # 있는 절만 검사한다. 공백 차이는 정규화해 비교한다
+    for ch in doc["chapters"]:
+        for sec in ch["sections"]:
+            page_text = ""
+            for b in sec["blocks"]:
+                if b["type"] != "image":
+                    continue
+                path = resolve_image(b["src"], draft_dir, shots_dir)
+                if not path:
+                    continue
+                stem = os.path.splitext(path)[0]
+                if stem.endswith("_annotated"):
+                    stem = stem[:-len("_annotated")]
+                tpath = stem + ".text.txt"
+                if os.path.exists(tpath):
+                    try:
+                        with open(tpath, encoding="utf-8") as f:
+                            page_text += f.read() + "\n"
+                    except OSError:
+                        pass
+            if not page_text:
+                continue
+            norm_page = re.sub(r"\s+", "", page_text)
+            seen = set()
+            for b in sec["blocks"]:
+                for t in _block_texts(b):
+                    for m in LABEL_RE.finditer(plain(t)):
+                        lb = m.group(1).strip()
+                        # [사진 N] 참조와 placeholder 잔재는 별도 룰이 다룬다
+                        if not lb or lb in seen or lb.startswith(("사진", "스크린샷 필요")):
+                            continue
+                        seen.add(lb)
+                        if lb.replace(" ", "") not in norm_page:
+                            warns.append(f"[{sec['num']} {sec['title']}] 본문 [라벨] '{lb}' 이 "
+                                         "캡처 화면 텍스트에 없습니다 — 실제 버튼·항목 명칭 확인")
 
     # 미확정 마킹 잔존 (B 모드에서는 정당하므로 WARN — 최종 보고 대상)
     if raw_text:
@@ -109,10 +217,7 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
     for ch in doc["chapters"]:
         for sec in ch["sections"]:
             for b in sec["blocks"]:
-                texts = b["items"] if b["type"] == "bullets" else \
-                    [it["text"] for it in b["items"]] if b["type"] == "numbered" else \
-                    [b.get("text", "")] if b["type"] in ("para", "note") else []
-                for t in texts:
+                for t in _block_texts(b):
                     tm = TECH_TERMS_RE.search(t)
                     if tm:
                         warns.append(f"[{sec['num']} {sec['title']}] 기술 용어 '{tm.group()}' — "

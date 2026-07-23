@@ -1,9 +1,10 @@
 """manual-draft.md → 매뉴얼 DOCX 생성기 (전용 docx skill 이 없는 환경의 표준 폴백).
 
 output-formats.md 의 docx 명세를 내장한다:
-  표지 → 자동 목차(TOC 필드) → Heading 1(장)/2(절)/3(하위 절), 각 장 새 페이지,
-  본문 맑은 고딕, 이미지 폭 맞춤 + [사진 N] 캡션, placeholder 회색 안내 문단,
-  머리글(문서명)·바닥글(가운데 페이지 번호), 마크다운 서식은 실제 서식으로 변환.
+  표지(분리 세트는 --cover-label 2행 규격) → 자동 목차(TOC 필드) → Heading 1(장)/
+  2(절)/3(하위 절), 각 장 새 페이지, 본문 맑은 고딕, 이미지 폭 맞춤(세로로 긴
+  캡처는 높이 상한에서 축소) + 검은 실선 테두리 + [사진 N] 캡션, placeholder 회색
+  안내 문단, 머리글(문서명)·바닥글(가운데 페이지 번호), 마크다운 서식은 실제 서식으로 변환.
 
 사용 예:
   python build_docx.py --draft manual-work/manual-draft.md \
@@ -15,6 +16,7 @@ output-formats.md 의 docx 명세를 내장한다:
 
 import argparse
 import os
+import re
 import sys
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -22,7 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import parse_draft, parse_inline, parse_meta, resolve_image
+from draft_parser import parse_draft, parse_inline, parse_meta, image_size, resolve_image
 
 
 def fail(msg, code=1):
@@ -95,6 +97,35 @@ def shade(para, hex_fill="F1F2F4"):
     pPr.append(shd)
 
 
+IMG_W_CM = 16.0       # 스크린샷 삽입 폭
+IMG_MAX_H_CM = 20.0   # 삽입 높이 상한 — A4 본문 가용(25.7cm) 안에서 잘리지 않게
+
+
+def apply_picture_border(inline_shape):
+    """그림 서식: 검은색 실선 테두리(0.75pt) — pptx 와 동일한 이미지 규격.
+    흰 배경 캡처가 흰 용지에 경계 없이 녹아드는 것을 막는다."""
+    spPr = inline_shape._inline.graphic.graphicData.pic.spPr
+    ln = OxmlElement("a:ln")
+    ln.set("w", "9525")  # 0.75pt (EMU)
+    fill = OxmlElement("a:solidFill")
+    clr = OxmlElement("a:srgbClr")
+    clr.set("val", "000000")
+    fill.append(clr)
+    ln.append(fill)
+    spPr.append(ln)
+
+
+def add_screenshot(para, path):
+    """스크린샷 삽입 — 폭 16cm 기준, 세로로 긴 캡처는 높이 상한에서 비율 유지 축소."""
+    size = image_size(path)
+    run = para.add_run()
+    if size and size[0] and IMG_W_CM * size[1] / size[0] > IMG_MAX_H_CM:
+        shp = run.add_picture(path, height=Cm(IMG_MAX_H_CM))
+    else:
+        shp = run.add_picture(path, width=Cm(IMG_W_CM))
+    apply_picture_border(shp)
+
+
 def render_blocks(doc_x, blocks, draft_dir, shots_dir, counters):
     for b in blocks:
         t = b["type"]
@@ -133,7 +164,7 @@ def render_blocks(doc_x, blocks, draft_dir, shots_dir, counters):
             p = doc_x.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             if path:
-                p.add_run().add_picture(path, width=Cm(16))
+                add_screenshot(p, path)
             else:
                 add_runs(p, f"(이미지 파일 누락: {b['src']})", color=NOTE)
             if b.get("caption"):
@@ -159,6 +190,10 @@ def main():
     ap.add_argument("--audience")
     ap.add_argument("--version")
     ap.add_argument("--date")
+    ap.add_argument("--cover-label",
+                    help='표지 1행 매뉴얼 구분 표기(예: "관리자 매뉴얼") — 독자 영역별로 '
+                         "매뉴얼이 분리된 세트일 때만 지정. 지정 시 표지가 [구분]+[프로젝트명] "
+                         "2행이 되고, 미지정 시 프로젝트명만 표기한다")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 
@@ -219,12 +254,26 @@ def main():
     set_kfont(fp.add_run(""), size=9)
     add_field(fp, "PAGE")
 
-    # 표지
+    # 표지 — pptx 와 동일 규격: 분리 세트는 [매뉴얼 구분]+[프로젝트명] 2행,
+    # 단일 매뉴얼은 프로젝트명 + 대상 부제
+    cover_title = title
+    m = re.match(r"^(.{0,20}매뉴얼)\s*[—\-–:]\s*(.+)$", cover_title)
+    if m:
+        cover_title = m.group(2).strip()
     for _ in range(6):
         doc_x.add_paragraph()
+    if args.cover_label:
+        p = doc_x.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        add_runs(p, args.cover_label, size=16, color=MUTED)
     p = doc_x.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    add_runs(p, title, size=28, bold=True)
+    add_runs(p, cover_title, size=28, bold=True)
+    if not args.cover_label:
+        p = doc_x.add_paragraph()
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        add_runs(p, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
+                 size=13, color=MUTED)
     p = doc_x.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     add_runs(p, " · ".join(v for v in (audience, f"버전 {version}" if version else "", date) if v), size=12, color=MUTED)

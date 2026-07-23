@@ -61,6 +61,62 @@ def png_size(path):
     return None
 
 
+# SOF(Start of Frame) 마커 — C4(DHT)·C8(JPG 확장)·CC(DAC) 는 프레임 헤더가 아니다
+_JPEG_SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+
+
+def jpeg_size(path):
+    """JPEG 파일의 (width, height). JPEG 가 아니거나 파싱 실패면 None."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(2) != b"\xff\xd8":
+                return None
+            while True:
+                b = f.read(1)
+                if not b:
+                    return None
+                if b != b"\xff":
+                    continue
+                marker = f.read(1)
+                while marker == b"\xff":
+                    marker = f.read(1)
+                if not marker:
+                    return None
+                m = marker[0]
+                if m in (0xD8, 0xD9, 0x01) or 0xD0 <= m <= 0xD7:  # 길이 없는 마커
+                    continue
+                seg = f.read(2)
+                if len(seg) < 2:
+                    return None
+                seg_len = struct.unpack(">H", seg)[0]
+                if m in _JPEG_SOF:
+                    data = f.read(5)
+                    if len(data) < 5:
+                        return None
+                    h, w = struct.unpack(">HH", data[1:5])
+                    return w, h
+                f.seek(seg_len - 2, 1)
+    except OSError:
+        return None
+
+
+def image_size(path):
+    """이미지 파일의 (width, height) px — 치수를 모르면 None.
+
+    PNG/JPEG 는 헤더 직접 파싱(의존성 없음), 그 외 포맷은 Pillow 가 있으면 폴백.
+    빌더는 None 이면 폭만 지정해 렌더러(python-pptx)가 원본 비율을 유지하게 한다 —
+    비율을 임의 가정해 이미지를 변형 렌더하는 것을 막기 위함이다."""
+    size = png_size(path) or jpeg_size(path)
+    if size:
+        return size
+    try:
+        from PIL import Image
+        with Image.open(path) as im:
+            return im.size
+    except Exception:
+        return None
+
+
 # 라우트 구분자는 공백으로 감싼 대시(— – -)만 인정한다 — 화면명 안의 하이픈 단어와 구분
 PLACEHOLDER_RE = re.compile(r"\[스크린샷 필요:\s*(SCR-[\w-]+)\s+([^\]]+?)\s*(?:\s[—–-]\s[^\]]*)?\]")
 # 캡션 별표(이탤릭)는 선택 — 이미지 직후 줄에서만 조회하므로 본문 오탐이 없다

@@ -32,7 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import (parse_draft, parse_inline, parse_meta, plain, png_size,
+from draft_parser import (parse_draft, parse_inline, parse_meta, plain, image_size,
                           resolve_image, text_lines, CIRCLED)
 
 
@@ -103,8 +103,8 @@ def apply_orientation(portrait):
     가로 비율 캡처는 상(이미지)/하(설명)으로 배치한다.
     """
     global PORTRAIT, SLIDE_W, SLIDE_H, BODY_X, BODY_W, SIDE_X, SIDE_W, TEXT_BOTTOM
-    global IMG_Y, V_FRAME_W, V_FRAME_H, H_FRAME_W, H_FRAME_H, PORT_IMG_MAX_H
-    global SIDE_EA, WIDE_EA, INTRO_EA, SIDE_LINES, BOTTOM_LINES, PLAIN_LINES
+    global IMG_Y, V_FRAME_W, V_FRAME_H, H_FRAME_W, H_FRAME_H, PORT_IMG_MAX_H, IMG_MIN_H
+    global SIDE_EA, WIDE_EA, INTRO_EA, PLAIN_LINES
     global COMBINE_BUDGET, TOC_COLS, TOC_PER_COL, TOC_COL_W
     PORTRAIT = portrait
     if portrait:
@@ -118,8 +118,9 @@ def apply_orientation(portrait):
         V_FRAME_W, V_FRAME_H = Inches(6.4), Inches(4.32)
         H_FRAME_W, H_FRAME_H = Inches(6.4), Inches(4.32)
         PORT_IMG_MAX_H = Inches(5.7)                     # 세로로 긴 캡처의 높이 상한(설명 공간 확보)
+        IMG_MIN_H = 3.6                                  # 설명 수용 위한 이미지 축소 하한(in)
         SIDE_EA, WIDE_EA, INTRO_EA = 33, 37, 35          # 전각 기준 줄당 문자 수(폭 비례)
-        SIDE_LINES, BOTTOM_LINES, PLAIN_LINES = 18, 13, 30  # 설명 줄 예산
+        PLAIN_LINES = 30                                 # 시각 요소 없는 절의 설명 줄 예산
         COMBINE_BUDGET = 8.6                             # 개요 병합 본문 가용 높이(in)
         TOC_COLS, TOC_PER_COL, TOC_COL_W = 1, 26, Inches(6.4)
     else:
@@ -131,8 +132,9 @@ def apply_orientation(portrait):
         V_FRAME_W, V_FRAME_H = Inches(6.3), Inches(4.35)  # 세로 비율 캡처(좌측) 프레임
         H_FRAME_W, H_FRAME_H = Inches(9.4), Inches(3.2)   # 가로 비율 캡처(상단) 프레임
         PORT_IMG_MAX_H = None                             # 가로형 미사용
+        IMG_MIN_H = 2.3                                   # 설명 수용 위한 이미지 축소 하한(in)
         SIDE_EA, WIDE_EA, INTRO_EA = 33, 72, 68
-        SIDE_LINES, BOTTOM_LINES, PLAIN_LINES = 18, 7, 16
+        PLAIN_LINES = 16
         COMBINE_BUDGET = 5.6
         TOC_COLS, TOC_PER_COL, TOC_COL_W = 2, 17, Inches(5.9)
 
@@ -195,7 +197,9 @@ def add_rect(slide, x, y, w, h, fill, line=None):
 
 
 def image_ratio(path):
-    size = png_size(path)
+    """가로/세로 비율 — 치수를 모르는 포맷은 배치 판정용 기본값 1.33 (렌더는
+    width-only 지정으로 원본 비율을 유지하므로 이 값이 이미지를 변형시키지 않는다)."""
+    size = image_size(path)
     return (size[0] / size[1]) if size else 1.33
 
 
@@ -218,73 +222,127 @@ def sec_visual(sec):
     return any(b["type"] in ("image", "placeholder") for b in sec["blocks"])
 
 
+LINE_H = 0.275  # 설명 항목 줄당 높이(in) — 11.5pt + space_after 6pt
+
+
+def _seg_layout(visual, img_path, need_lines):
+    """세그먼트의 (줄당 문자 수, 설명 줄 예산, 확정 프레임 높이 in|None).
+
+    예산은 정적 상수가 아니라 그 컷의 시각 요소 실높이가 남기는 공간에서 계산한다
+    — 이미지가 큰 컷에서 텍스트가 슬라이드 밖으로 넘치는 것을 분할 단계에서 막는다.
+    상(이미지)/하(설명) 배치에서 설명(need_lines)이 표준 프레임의 예산을 넘으면,
+    분할보다 이미지 프레임을 하한(IMG_MIN_H)까지 줄여 한 컷에 담는 것을 우선한다
+    — 컷당 항목 1~2개짜리 과분할을 막는다. 확정 프레임 높이는 플랜에 실려
+    render_screen 이 그대로 쓴다(분할 예산과 렌더 기하의 일치 보장)."""
+    if visual is None:
+        return WIDE_EA, PLAIN_LINES, None
+    horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
+    if not (PORTRAIT or horizontal):
+        # 가로형 좌(이미지)/우(설명) — 우측 컬럼은 이미지 상단부터 하한까지 전부 쓴다
+        return SIDE_EA, int((TEXT_BOTTOM.inches - IMG_Y.inches) / LINE_H), None
+    # 표준 프레임 높이: 세로형 이미지는 비율 기반 실높이(상한 반영), 그 외는 프레임 규격
+    if img_path and PORTRAIT:
+        std_h = min(H_FRAME_W.inches / image_ratio(img_path), PORT_IMG_MAX_H.inches)
+    else:
+        std_h = H_FRAME_H.inches
+    avail = TEXT_BOTTOM.inches - IMG_Y.inches - (0.05 + CAP_H.inches + 0.08)
+    budget = max(2, int((avail - std_h) / LINE_H))
+    if need_lines > budget:
+        want_h = avail - need_lines * LINE_H
+        if want_h >= IMG_MIN_H:
+            return WIDE_EA, need_lines, want_h        # 프레임 축소로 한 컷 수용
+        return WIDE_EA, max(2, int((avail - IMG_MIN_H) / LINE_H)), IMG_MIN_H
+    return WIDE_EA, budget, std_h
+
+
 def split_section(sec, draft_dir, shots_dir):
-    """절 하나를 1개 이상의 화면 슬라이드 플랜으로 나눈다."""
+    """절 하나를 1개 이상의 화면 슬라이드 플랜으로 나눈다.
+
+    시각 요소(캡처·placeholder) 경계를 우선한다: 원고 순서대로 각 시각 요소와 그
+    뒤에 이어지는 항목들을 한 세그먼트로 묶는다 — 이미지가 여러 장이거나
+    placeholder 와 혼재해도 어느 것도 소실되지 않고, 컷-설명 대응이 원고 순서
+    그대로 보존된다. 항목 수(MAX_ITEMS)·줄 예산 2차 분할은 세그먼트 안에서만
+    일어나며, 분할된 컷들은 그 세그먼트의 시각 요소를 반복 표시한다."""
     blocks = sec["blocks"]
     paras = [b["text"] for b in blocks if b["type"] == "para"]
     access = next((b["text"] for b in blocks if b["type"] == "access"), "")
     notes = [b["text"] for b in blocks if b["type"] == "note"]
     tables = [b for b in blocks if b["type"] == "table"]
-    images = [b for b in blocks if b["type"] == "image"]
-    image = images[0] if images else None
-    ph = next((b for b in blocks if b["type"] == "placeholder"), None)
 
-    items = collect_items(blocks)
-
-    img_path = resolve_image(image["src"], draft_dir, shots_dir) if image else None
-    horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
-    has_visual = bool(image or ph)
-    if not has_visual:
-        width_ea, budget = WIDE_EA, PLAIN_LINES
-    elif PORTRAIT or horizontal:
-        # 세로형은 폭이 좁아 항상 상(이미지)/하(설명) 배치 — 가로 비율 판정 무관
-        width_ea, budget = WIDE_EA, BOTTOM_LINES
-    else:
-        width_ea, budget = SIDE_EA, SIDE_LINES
-
-    chunks = [[]]
-    used = 0
-    for marker, text in items:
-        lines = text_lines(plain(text), width_ea)
-        if chunks[-1] and (len(chunks[-1]) >= MAX_ITEMS or used + lines > budget):
-            chunks.append([])
-            used = 0
-        chunks[-1].append((marker, text))
-        used += lines
-    if not items:
-        chunks = [[]]
-
-    # 균형 재배분: 그리디 분할(6+1 등)은 마지막 장에 항목 1~2개만 남는 고아 슬라이드를
-    # 만들므로, 청크 수는 유지한 채 항목을 균등(4+3 등)하게 다시 나눈다
-    if len(chunks) > 1:
-        k, n = len(chunks), len(items)
-        sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
-        balanced, pos = [], 0
-        for size in sizes:
-            balanced.append(items[pos:pos + size])
-            pos += size
-        if all(len(c) <= MAX_ITEMS and
-               sum(text_lines(plain(t), width_ea) for _, t in c) <= budget * 1.2
-               for c in balanced):
-            chunks = balanced
+    # 시각 요소 경계 세그먼트: (visual_block|None, [(marker, text) ...]) 목록
+    segments = []
+    cur_visual, cur_items = None, []
+    for b in blocks:
+        if b["type"] in ("image", "placeholder"):
+            if cur_visual is not None or cur_items:
+                segments.append((cur_visual, cur_items))
+            cur_visual, cur_items = b, []
+        elif b["type"] == "bullets":
+            cur_items.extend(("•", t) for t in b["items"])
+        elif b["type"] == "numbered":
+            cur_items.extend((it["marker"], it["text"]) for it in b["items"])
+    segments.append((cur_visual, cur_items))
 
     plans = []
-    total = len(chunks)
-    for idx, chunk in enumerate(chunks):
-        # 절에 캡처가 여러 장이면 분할 컷에 순서대로 매핑한다 — (2/2)의 설명이 화면
-        # 하단·다음 영역을 다룰 때 그 컷의 캡처가 함께 보이게 하기 위함이다
-        cut = images[idx] if idx < len(images) else image
-        cut_path = resolve_image(cut["src"], draft_dir, shots_dir) if cut else None
-        plans.append({
-            "kind": "screen", "sec": sec, "part": (idx + 1, total),
-            "paras": paras if idx == 0 else [],
-            "access": access if idx == 0 else "",
-            "image": cut, "img_path": cut_path, "ph": ph,
-            "horizontal": bool(cut_path) and image_ratio(cut_path) >= 1.45,
-            "items": chunk,
-            "notes": notes if idx == total - 1 else [],
-            "tables": tables if idx == 0 else [],
-        })
+    last_si = len(segments) - 1
+    for si, (visual, items) in enumerate(segments):
+        image = visual if visual is not None and visual["type"] == "image" else None
+        ph = visual if visual is not None and visual["type"] == "placeholder" else None
+        img_path = resolve_image(image["src"], draft_dir, shots_dir) if image else None
+        # 표는 첫 컷, ※주의는 마지막 컷에 렌더되므로 그 컷의 필요 줄·예산에 반영한다
+        wea = SIDE_EA if (visual is not None and not PORTRAIT
+                          and not (bool(img_path) and image_ratio(img_path) >= 1.45)) else WIDE_EA
+        extra = 0
+        if si == 0 and tables:
+            extra += sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
+                         for tb in tables)
+        if si == last_si and notes:
+            extra += sum(text_lines(plain(nt), wea) for nt in notes)
+        need = sum(text_lines(plain(t), wea) for _, t in items) + extra
+        width_ea, budget, frame_h = _seg_layout(visual, img_path, need)
+        budget = max(2, budget - extra)
+
+        chunks = [[]]
+        used = 0
+        for marker, text in items:
+            lines = text_lines(plain(text), width_ea)
+            if chunks[-1] and (len(chunks[-1]) >= MAX_ITEMS or used + lines > budget):
+                chunks.append([])
+                used = 0
+            chunks[-1].append((marker, text))
+            used += lines
+
+        # 균형 재배분: 그리디 분할(6+1 등)은 마지막 장에 항목 1~2개만 남는 고아
+        # 슬라이드를 만들므로, 청크 수는 유지한 채 항목을 균등(4+3 등)하게 다시 나눈다
+        if len(chunks) > 1:
+            k, n = len(chunks), len(items)
+            sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+            balanced, pos = [], 0
+            for size in sizes:
+                balanced.append(items[pos:pos + size])
+                pos += size
+            if all(len(c) <= MAX_ITEMS and
+                   sum(text_lines(plain(t), width_ea) for _, t in c) <= budget * 1.2
+                   for c in balanced):
+                chunks = balanced
+
+        for chunk in chunks:
+            plans.append({
+                "kind": "screen", "sec": sec,
+                "image": image, "img_path": img_path, "ph": ph,
+                "horizontal": bool(img_path) and image_ratio(img_path) >= 1.45,
+                "frame_h": frame_h,
+                "items": chunk,
+            })
+
+    # 절 수준 요소 배치: 개요·접근 경로·표는 첫 컷, ※주의는 마지막 컷
+    total = len(plans)
+    for pi, p in enumerate(plans):
+        p["part"] = (pi + 1, total)
+        p["paras"] = paras if pi == 0 else []
+        p["access"] = access if pi == 0 else ""
+        p["tables"] = tables if pi == 0 else []
+        p["notes"] = notes if pi == total - 1 else []
     return plans
 
 
@@ -629,18 +687,32 @@ def render_screen(prs, plan_item, ch_of, page_no):
         # 상(이미지)/하(설명) 배치 여부 — 세로형은 항상, 가로형은 가로 비율 캡처만
         top_layout = PORTRAIT or (horizontal and img_path)
         frame_w, frame_h = (H_FRAME_W, H_FRAME_H) if top_layout else (V_FRAME_W, V_FRAME_H)
+        # 분할 단계가 확정한 프레임 높이(설명 수용 위한 축소 포함)를 그대로 쓴다 —
+        # 분할 예산과 렌더 기하가 같은 수식을 공유해야 겹침·넘침이 없다
+        if plan_item.get("frame_h"):
+            frame_h = Inches(plan_item["frame_h"])
         frame_x = (SLIDE_W - frame_w) / 2 if top_layout else BODY_X
 
-        if img_path:
+        if img_path and image_size(img_path) is None:
+            # 치수를 모르는 포맷 — 폭만 지정해 렌더러가 원본 비율을 유지하게 하고,
+            # 실측 높이가 상한을 넘으면 비율 유지로 축소한다 (비율 가정 변형 금지)
+            pic = slide.shapes.add_picture(img_path, frame_x, img_y, width=frame_w)
+            if pic.height > frame_h:
+                pic.width = int(pic.width * (frame_h / pic.height))
+                pic.height = int(frame_h)
+                pic.left = int(frame_x + (frame_w - pic.width) / 2)
+            frame_h = pic.height  # 캡션·설명 시작 위치가 실측 높이를 따르도록
+            apply_picture_border(pic)
+        elif img_path:
             ratio = image_ratio(img_path)
             if PORTRAIT:
                 # 세로형: 본문 폭을 가득 채우고 높이는 비율 유지 — 뷰포트를 통일한
-                # 캡처라면 전 장표에서 동일 크기가 된다. 세로로 과하게 긴 캡처만
-                # 상한(PORT_IMG_MAX_H)에서 비율 유지 축소해 설명 공간을 지킨다.
+                # 캡처라면 전 장표에서 동일 크기가 된다. 프레임 상한(비율 실높이
+                # 또는 설명 수용 축소값)을 넘으면 비율 유지로 줄인다.
                 w = frame_w
                 h = w / ratio
-                if h > PORT_IMG_MAX_H:
-                    h = PORT_IMG_MAX_H
+                if h > frame_h:
+                    h = frame_h
                     w = h * ratio
                 frame_h = h  # 캡션·설명 시작 위치가 실제 이미지 높이를 따르도록
             else:
@@ -789,8 +861,16 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     prs.save(args.out)
 
-    missing = sum(1 for it in plan if it["kind"] == "screen" and it["ph"] and it["part"][0] == 1)
+    missing = len({id(it["ph"]) for it in plan if it["kind"] == "screen" and it["ph"]})
     print(f"[build_pptx] 저장 완료: {args.out} (슬라이드 {len(plan)}장, placeholder {missing}건)")
+
+    # 이미지 소실 안전망 — 원고의 모든 image 블록이 최소 한 컷에 배치됐는지 대조한다
+    rendered = {id(it["image"]) for it in plan if it["kind"] == "screen" and it["image"]}
+    lost = [b["src"] for ch in doc["chapters"] for sec in ch["sections"]
+            for b in sec["blocks"] if b["type"] == "image" and id(b) not in rendered]
+    if lost:
+        print(f"[build_pptx] 경고: 원고의 이미지 {len(lost)}건이 어떤 슬라이드에도 "
+              f"배치되지 않았습니다: {lost}", file=sys.stderr)
 
     # 배지·테두리 파이프라인 미사용 감지 — 세션이 옛 지침으로 돌아도 조립 시점에 잡는다
     if os.path.isdir(shots_dir):

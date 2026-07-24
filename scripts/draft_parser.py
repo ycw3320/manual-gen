@@ -117,6 +117,82 @@ def image_size(path):
         return None
 
 
+STD_VP_RATIO = 1600 / 1080          # 표준 뷰포트 비율 — 타일 목표 종횡비
+
+
+def _safe_cut_rows(gray_w, h, px):
+    """가로 방향 픽셀 변화가 작은(=배경 여백) 행의 '안전도'를 0~1로 돌려준다.
+    표 행·카드 사이 여백은 균일 배경이라 값이 낮고, 텍스트·테두리 행은 높다."""
+    scores = []
+    for y in range(h):
+        row = [px[x, y] for x in range(gray_w)]
+        scores.append((max(row) - min(row)) / 255.0)  # 행 내 명암 범위(0=완전 균일)
+    return scores
+
+
+def tile_tall_image(path, out_dir, max_bands=6):
+    """세로로 긴 이미지를 표준 비율(≈1.48) 밴드 N장으로 자른다. 절단선은 등간격이
+    아니라 '배경 여백 행'에 스냅해 표 행·카드·차트가 잘리지 않게 한다(요소 인식).
+
+    반환: 밴드 파일 경로 리스트(2장 이상) 또는 [] (Pillow 없음·치수 불명·불필요·실패).
+    폭은 원본 그대로라 각 밴드 비율이 표준에 가까워 빌더가 전폭으로 균일 렌더한다.
+    build_pptx / build_docx 공용 — 매뉴얼 전체 캡처의 렌더 폭 일관성을 위한 핵심."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+    size = image_size(path)
+    if not size or size[0] == 0:
+        return []
+    w, h = size
+    tile_h = max(1, round(w / STD_VP_RATIO))       # 표준 비율 밴드 높이(px)
+    if h <= tile_h * 1.12:                          # 한 밴드 안에 들어오면 분할 불필요
+        return []
+    n = min(max_bands, max(2, math.ceil(h / tile_h)))
+    try:
+        im = Image.open(path).convert("RGB")
+        gw = 96                                     # 가로 축소해 행 스캔 비용 절감
+        gray = im.convert("L").resize((gw, h))
+        px = gray.load()
+        safety = _safe_cut_rows(gw, h, px)
+    except Exception:
+        return []
+
+    # 목표 경계 y = k*h/n 를 ±tol 안의 '가장 배경다운 행'으로 스냅(요소 관통 회피)
+    tol = int(tile_h * 0.42)
+    cuts = [0]
+    for k in range(1, n):
+        target = round(h * k / n)
+        lo, hi = max(cuts[-1] + tile_h // 3, target - tol), min(h - tile_h // 3, target + tol)
+        if lo >= hi:
+            cuts.append(target)
+            continue
+        best_y, best_s = target, 2.0
+        for y in range(lo, hi):
+            # 목표에서 멀수록 소폭 페널티 — 동점이면 목표에 가까운 안전 행 선택
+            s = safety[y] + abs(y - target) / (tol * 40.0)
+            if s < best_s:
+                best_s, best_y = s, y
+        cuts.append(best_y)
+    cuts.append(h)
+
+    stem, ext = os.path.splitext(os.path.basename(path))
+    bands_dir = os.path.join(out_dir, "_bands")
+    os.makedirs(bands_dir, exist_ok=True)
+    paths = []
+    try:
+        for i in range(len(cuts) - 1):
+            top, bot = cuts[i], cuts[i + 1]
+            if bot - top < 8:
+                continue
+            bp = os.path.join(bands_dir, f"{stem}_b{i + 1}of{n}{ext}")
+            im.crop((0, top, w, bot)).save(bp)
+            paths.append(bp)
+    except Exception:
+        return []
+    return paths if len(paths) > 1 else []
+
+
 # 라우트 구분자는 공백으로 감싼 대시(— – -)만 인정한다 — 화면명 안의 하이픈 단어와 구분
 PLACEHOLDER_RE = re.compile(r"\[스크린샷 필요:\s*(SCR-[\w-]+)\s+([^\]]+?)\s*(?:\s[—–-]\s[^\]]*)?\]")
 # 캡션 별표(이탤릭)는 선택 — 이미지 직후 줄에서만 조회하므로 본문 오탐이 없다

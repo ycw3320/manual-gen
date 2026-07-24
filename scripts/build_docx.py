@@ -24,7 +24,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import parse_draft, parse_inline, parse_meta, image_size, resolve_image
+from draft_parser import (parse_draft, parse_inline, parse_meta, image_size,
+                          resolve_image, tile_tall_image)
 
 
 def fail(msg, code=1):
@@ -161,16 +162,28 @@ def render_blocks(doc_x, blocks, draft_dir, shots_dir, counters):
             doc_x.add_paragraph()
         elif t == "image":
             path = resolve_image(b["src"], draft_dir, shots_dir)
-            p = doc_x.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # 세로로 긴 캡처는 폭을 줄이는 대신 표준 비율 밴드로 타일 분할한다 —
+            # 폭 16cm가 균일성 앵커이므로 모든 밴드가 동일 폭으로 들어간다(요소 경계 절단).
+            targets = []
             if path:
-                add_screenshot(p, path)
-            else:
+                size = image_size(path)
+                if size and size[0] and size[1] / size[0] > IMG_MAX_H_CM / IMG_W_CM:
+                    targets = tile_tall_image(path, shots_dir)
+                if not targets:
+                    targets = [path]
+            if not targets:
+                p = doc_x.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 add_runs(p, f"(이미지 파일 누락: {b['src']})", color=NOTE)
+            for ti, tp in enumerate(targets):
+                p = doc_x.add_paragraph()
+                p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                add_screenshot(p, tp)
             if b.get("caption"):
+                suffix = f" ({len(targets)}분할)" if len(targets) > 1 else ""
                 cap = doc_x.add_paragraph()
                 cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-                add_runs(cap, b["caption"], size=9, color=MUTED)
+                add_runs(cap, b["caption"] + suffix, size=9, color=MUTED)
         elif t == "placeholder":
             p = doc_x.add_paragraph()
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER

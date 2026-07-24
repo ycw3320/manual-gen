@@ -229,6 +229,32 @@ def sec_visual(sec):
 LINE_H = 0.275  # 설명 항목 줄당 높이(in) — 11.5pt + space_after 6pt
 
 
+def _load_badge_positions(img_path):
+    """이미지에 대응하는 markers.json 에서 배지별 세로 위치를 읽는다.
+
+    반환: 배지 번호(n) 오름차순의 y_frac 목록(이미지 전체 높이 대비 배지 상단, 0~1).
+    markers.json 이 없거나 파싱 실패면 []. cdp_capture --mark 가 저장한 좌표를 써서
+    타일 밴드에 배지=항목을 정확히 배분하기 위한 용도(없으면 높이 비율로 폴백)."""
+    import json
+    stem = os.path.splitext(img_path)[0]
+    cands = []
+    if stem.endswith("_annotated"):     # resolve_image 는 _annotated 를 우선 반환
+        cands.append(stem[:-len("_annotated")] + ".markers.json")
+    cands.append(stem + ".markers.json")
+    for mp in cands:
+        if not os.path.exists(mp):
+            continue
+        try:
+            with open(mp, encoding="utf-8") as f:
+                data = json.load(f)
+            ms = sorted((m for m in data.get("markers", []) if m.get("found")),
+                        key=lambda m: m.get("n", 0))
+            return [float(m.get("y", 0.0)) for m in ms]
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return []
+
+
 def _seg_layout(visual, img_path, need_lines):
     """세그먼트의 (줄당 문자 수, 설명 줄 예산, 확정 프레임 높이 in|None).
 
@@ -310,15 +336,27 @@ def split_section(sec, draft_dir, shots_dir):
         if len(bands) > 1:
             nb = len(bands)
             base_cap = (image.get("caption") if image else "") or ""
-            # 항목(①②③…)을 밴드 높이 비율로 순차 배분한다 — 배지는 시각 순서(위→아래)
-            # 이고 항목도 그 순서이므로, 각 밴드가 자기 배지에 해당하는 설명만 싣는다.
             bh = [(image_size(bp) or (0, 1))[1] or 1 for bp in bands]
             th = sum(bh) or 1
-            dist, pos = [], 0
-            for bi in range(nb):
-                cnt = (len(items) - pos) if bi == nb - 1 else round(len(items) * bh[bi] / th)
-                dist.append(items[pos:pos + max(0, cnt)])
-                pos += max(0, cnt)
+            # 밴드 경계(전체 높이 대비 누적 하단 비율)
+            edges, acc = [], 0
+            for hpx in bh:
+                acc += hpx
+                edges.append(acc / th)
+            # 배지별 y좌표(markers.json)가 있으면 각 배지가 실제로 놓인 밴드에 그 항목을
+            # 정확히 배분한다. 없으면 밴드 높이 비율로 순차 배분(근사 폴백).
+            ys = _load_badge_positions(img_path)
+            dist = [[] for _ in range(nb)]
+            if len(ys) == len(items) and items:
+                for idx, y in enumerate(ys):
+                    b = next((bi for bi, bot in enumerate(edges) if y < bot), nb - 1)
+                    dist[b].append(items[idx])
+            else:
+                pos = 0
+                for bi in range(nb):
+                    cnt = (len(items) - pos) if bi == nb - 1 else round(len(items) * bh[bi] / th)
+                    dist[bi] = items[pos:pos + max(0, cnt)]
+                    pos += max(0, cnt)
             for bi, bpath in enumerate(bands):
                 br = image_ratio(bpath)
                 cap = f"{base_cap} ({bi + 1}/{nb})".strip() if base_cap else ""

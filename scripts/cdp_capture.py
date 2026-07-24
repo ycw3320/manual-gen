@@ -32,6 +32,7 @@
 """
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -318,6 +319,8 @@ def main():
     ap.add_argument("--wait-selector", help="캡처 전 나타나기를 기다릴 CSS 셀렉터")
     ap.add_argument("--wait-ms", type=int, default=800, help="로드 후 추가 대기(ms, 기본 800)")
     ap.add_argument("--timeout", type=int, default=30000, help="이동/대기 타임아웃(ms)")
+    ap.add_argument("--shot-timeout", type=int, default=20000,
+                    help="스크린샷 타임아웃(ms, 기본 20000) — 애니메이션은 disabled 로 정지 후 캡처")
     ap.add_argument("--list-tabs", action="store_true", help="열린 탭 목록만 출력")
     # 재개
     ap.add_argument("--skip-existing", action="store_true", help="--out 파일이 이미 있으면 캡처 없이 종료")
@@ -511,10 +514,54 @@ def main():
             print(f"[cdp_capture] 배지 좌표만 저장(캡처 생략): {mpath} (산출 {found}/{len(markers)})")
             return
 
+        # 실시간 대시보드(센서 폴링·무한 CSS 애니메이션)는 Playwright screenshot 의
+        # 안정화 대기가 끝나지 않아 타임아웃한다. 캡처 직전 모든 애니메이션·전환을
+        # 명시적으로 정지시켜(스타일 주입 + 인라인 + Web Animations API) 안정 상태를
+        # 만든다 — animations="disabled" 만으로는 무한 CSS 애니메이션 처리에서 멈춘다.
         try:
-            page.screenshot(path=args.out, full_page=args.full_page)
+            page.add_style_tag(content="*,*::before,*::after{animation:none!important;"
+                               "animation-play-state:paused!important;transition:none!important}")
+            page.evaluate("() => { try {"
+                          "document.querySelectorAll('*').forEach(e => {"
+                          "e.style.animationPlayState='paused'; e.style.transition='none';});"
+                          "if (document.getAnimations) document.getAnimations()"
+                          ".forEach(a => { try { a.pause(); } catch(_){} });"
+                          "} catch(_){} }")
+        except Exception:
+            pass
+
+        # raw CDP Page.captureScreenshot — Playwright page.screenshot 의 폰트·애니메이션
+        # 안정화 대기를 우회한다. 실시간 대시보드처럼 idle 에 도달하지 못하는 페이지에서도
+        # 현재 프레임을 즉시 캡처하므로 타임아웃 없이 성공한다(위 정지 로직으로 프레임 안정화).
+        def _raw_shot(full):
+            sess = context.new_cdp_session(page)
+            try:
+                params = {"format": "png"}
+                if full:
+                    m = sess.send("Page.getLayoutMetrics")
+                    cs = m.get("cssContentSize") or m.get("contentSize")
+                    params["captureBeyondViewport"] = True
+                    params["clip"] = {"x": 0, "y": 0, "width": cs["width"],
+                                      "height": cs["height"], "scale": 1}
+                data = base64.b64decode(sess.send("Page.captureScreenshot", params)["data"])
+                with open(args.out, "wb") as f:
+                    f.write(data)
+            finally:
+                try:
+                    sess.detach()
+                except Exception:
+                    pass
+
+        try:
+            _raw_shot(args.full_page)
         except Exception as e:
-            fail(f"캡처 실패: {e}")
+            # 폴백: raw CDP 불가 환경 → Playwright screenshot(애니메이션 정지)
+            print(f"[cdp_capture] 경고: raw CDP 캡처 실패({str(e)[:60]}) — Playwright 폴백", file=sys.stderr)
+            try:
+                page.screenshot(path=args.out, full_page=args.full_page,
+                                animations="disabled", caret="initial", timeout=args.shot_timeout)
+            except Exception as e2:
+                fail(f"캡처 실패: {e2}")
 
         if markers is not None:
             mpath = os.path.splitext(args.out)[0] + ".markers.json"

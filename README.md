@@ -161,6 +161,7 @@ scripts/
 ├── check_env.py                # 환경 점검(doctor) — 의존성·브라우저·가능 경로 확인
 ├── build_pptx.py               # 원고→PPTX (표지/목차/고정 프레임·테두리·분할·자체 검증)
 ├── build_docx.py               # 원고→DOCX (표지/자동 목차/헤딩/이미지 테두리/캡션/페이지 번호)
+├── verify_pptx.py              # 산출 pptx 규격 검증 — 생성 경로 무관(서식 복제 경로 필수)
 └── export_slides.ps1           # pptx→슬라이드별 PNG (렌더 검수용 — PowerPoint COM/soffice)
 ```
 

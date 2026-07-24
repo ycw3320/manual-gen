@@ -577,6 +577,23 @@ def main():
             except Exception as e:
                 print(f"[cdp_capture] 경고: 본문 텍스트 저장 실패 — {e}", file=sys.stderr)
 
+        # 세로로 긴 캡처 안내 — 매뉴얼 전체에서 캡처는 동일 렌더 폭으로 들어가야
+        # 일관성이 좋다. 빌더가 균일 폭 유지를 위해 표준 비율 밴드로 자동 타일 분할하나,
+        # 표 행·카드가 많은 화면은 기능 경계로 나눠 개별 캡처(논리 분할)가 더 깔끔하다.
+        try:
+            with open(args.out, "rb") as f:
+                head = f.read(24)
+            if head[:8] == b"\x89PNG\r\n\x1a\n":
+                import struct
+                iw, ih = struct.unpack(">II", head[16:24])
+                if ih and iw / ih < 1.123:
+                    print(f"[cdp_capture] 참고: 세로로 긴 캡처(비율 {iw / ih:.2f} < 1.12) — 빌더가 "
+                          "균일 폭 유지를 위해 표준 비율 밴드로 자동 타일 분할합니다. 표 행·카드가 "
+                          "많은 화면이면 기능 경계로 나눠 개별 캡처(논리 분할)하는 편이 더 깔끔합니다.",
+                          file=sys.stderr)
+        except OSError:
+            pass
+
         print(f"[cdp_capture] 저장 완료: {args.out} (full_page={args.full_page})")
 
 

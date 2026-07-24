@@ -85,6 +85,61 @@ def apply_theme(name):
     DARK_SOFT, DARK_SOFTER, HEAD_NUM = _rgb(t["soft"]), _rgb(t["softer"]), _rgb(t["head_num"])
 
 
+def _hls_hex(h, l, s):
+    import colorsys
+    r, g, b = colorsys.hls_to_rgb(h, l, s)
+    return f"{round(r * 255):02X}{round(g * 255):02X}{round(b * 255):02X}"
+
+
+def _hex_hls(hex6):
+    import colorsys
+    return colorsys.rgb_to_hls(int(hex6[0:2], 16) / 255, int(hex6[2:4], 16) / 255,
+                               int(hex6[4:6], 16) / 255)
+
+
+def theme_from_template(path):
+    """참고 템플릿 pptx 의 색 테마(theme1.xml clrScheme)에서 dark·accent 를 추출해
+    커스텀 팔레트를 파생·적용한다. **레이아웃·규격은 번들 그대로** — '템플릿 참고'는
+    슬라이드 서식 복제가 아니라 색 스타일 추출이다. 서식 복제는 레이아웃 상속·
+    placeholder 기하 등에서 디자인이 깨지기 쉬워 명시 요청 시의 예외 경로로만 둔다.
+
+    성공 시 (dark_hex, accent_hex) 반환, 실패 시 None(호출부가 기본 테마 유지)."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("ppt/theme/theme1.xml").decode("utf-8", "ignore")
+    except Exception:
+        return None
+    m = re.search(r"<a:clrScheme.*?</a:clrScheme>", xml, re.S)
+    if not m:
+        return None
+    scheme = m.group(0)
+
+    def pick(tag):
+        mm = re.search(rf"<a:{tag}>.*?(?:srgbClr val=\"([0-9A-Fa-f]{{6}})\""
+                       rf"|sysClr[^>]*lastClr=\"([0-9A-Fa-f]{{6}})\")", scheme, re.S)
+        return (mm.group(1) or mm.group(2)).upper() if mm else None
+
+    dark, accent = pick("dk2"), pick("accent1")
+    if not dark or not accent:
+        return None
+    # dark 는 표지·간지의 배경 — 밝은 값이 오면(라이트 테마 템플릿) accent 를 어둡게 내려 사용
+    dh, dl, ds = _hex_hls(dark)
+    if dl > 0.5:
+        ah, al, as_ = _hex_hls(accent)
+        dark = _hls_hex(ah, 0.18, max(0.30, as_ * 0.8))
+        dh, dl, ds = _hex_hls(dark)
+    ah, al, as_ = _hex_hls(accent)
+    # 보조 팔레트 파생 — 기본 3종 테마의 명도·채도 관계를 따른다
+    global THEME, DARK, ACCENT, DARK_SOFT, DARK_SOFTER, HEAD_NUM
+    THEME = "template"
+    DARK, ACCENT = _rgb(dark), _rgb(accent)
+    DARK_SOFT = _rgb(_hls_hex(dh, 0.80, min(0.45, max(0.12, ds))))
+    DARK_SOFTER = _rgb(_hls_hex(dh, 0.68, min(0.30, max(0.10, ds * 0.7))))
+    HEAD_NUM = _rgb(_hls_hex(ah, 0.70, min(0.75, max(0.25, as_))))
+    return dark, accent
+
+
 apply_theme("navy")
 
 MAX_ITEMS = 6                 # 슬라이드당 설명 항목 상한 (초과 시 (1)/(2) 분할)
@@ -890,6 +945,9 @@ def main():
                     help="슬라이드 방향: portrait=A4 세로(기본) / landscape=16:9 가로")
     ap.add_argument("--theme", choices=sorted(THEMES), default="navy",
                     help="색 테마: navy=네이비+블루(기본) / forest=딥그린+틸 / charcoal=차콜+오렌지")
+    ap.add_argument("--theme-from", metavar="TEMPLATE_PPTX",
+                    help="참고 템플릿 pptx 에서 색 테마(dark·accent)를 추출해 적용 — "
+                         "레이아웃·규격은 번들 그대로(서식 복제 아님). 추출 실패 시 --theme 폴백")
     ap.add_argument("--cover-label",
                     help='표지 1행 매뉴얼 구분 표기(예: "관리자 매뉴얼") — 독자 영역별로 '
                          "매뉴얼이 분리된 세트일 때만 지정. 지정 시 표지가 [구분]+[프로젝트명] "
@@ -899,6 +957,14 @@ def main():
 
     apply_orientation(args.orientation == "portrait")
     apply_theme(args.theme)
+    if args.theme_from:
+        got = theme_from_template(args.theme_from)
+        if got:
+            print(f"[build_pptx] 참고 템플릿 색 테마 적용: dark=#{got[0]} accent=#{got[1]} "
+                  f"({os.path.basename(args.theme_from)}) — 레이아웃·규격은 번들 표준")
+        else:
+            print(f"[build_pptx] 경고: 템플릿 테마 추출 실패({args.theme_from}) — "
+                  f"--theme {args.theme} 로 진행", file=sys.stderr)
 
     if not os.path.exists(args.draft):
         fail(f"원고 없음: {args.draft}")

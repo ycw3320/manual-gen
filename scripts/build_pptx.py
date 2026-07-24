@@ -104,9 +104,13 @@ def apply_orientation(portrait):
     """
     global PORTRAIT, SLIDE_W, SLIDE_H, BODY_X, BODY_W, SIDE_X, SIDE_W, TEXT_BOTTOM
     global IMG_Y, V_FRAME_W, V_FRAME_H, H_FRAME_W, H_FRAME_H, PORT_IMG_MAX_H, IMG_MIN_H
-    global SIDE_EA, WIDE_EA, INTRO_EA, PLAIN_LINES
+    global SIDE_EA, WIDE_EA, INTRO_EA, PLAIN_LINES, TALL_RATIO_MIN
     global COMBINE_BUDGET, TOC_COLS, TOC_PER_COL, TOC_COL_W
     PORTRAIT = portrait
+    # 폭 균일 임계: 이미지 비율(가로/세로)이 이 값 미만이면 전폭 렌더 시 높이 상한에
+    # 걸려 폭이 줄어든다(=매뉴얼 내 다른 캡처와 크기 불일치). 그 아래는 타일 분할한다.
+    # 세로형 = BODY_W/PORT_IMG_MAX_H. 가로형은 폭 축소 압력이 낮아 미사용(None).
+    TALL_RATIO_MIN = round(6.4 / 5.7, 3) if portrait else None
     if portrait:
         SLIDE_W, SLIDE_H = Inches(7.5), Inches(10.833)
         BODY_X, BODY_W = Inches(0.55), Inches(6.4)      # 본문 전폭
@@ -203,6 +207,81 @@ def image_ratio(path):
     return (size[0] / size[1]) if size else 1.33
 
 
+STD_VP_RATIO = 1600 / 1080          # 표준 뷰포트 비율 — 타일 목표 종횡비
+
+
+def _safe_cut_rows(gray_w, h, px):
+    """가로 방향 픽셀 변화가 작은(=배경 여백) 행의 '안전도'를 0~1로 돌려준다.
+    표 행·카드 사이 여백은 균일 배경이라 값이 낮고, 텍스트·테두리 행은 높다."""
+    scores = []
+    for y in range(h):
+        row = [px[x, y] for x in range(gray_w)]
+        scores.append((max(row) - min(row)) / 255.0)  # 행 내 명암 범위(0=완전 균일)
+    return scores
+
+
+def tile_tall_image(path, out_dir):
+    """세로로 긴 이미지를 표준 비율(≈1.48) 밴드 N장으로 자른다. 절단선은 등간격이
+    아니라 '배경 여백 행'에 스냅해 표 행·카드·차트가 잘리지 않게 한다(요소 인식).
+
+    반환: 밴드 파일 경로 리스트(2장 이상) 또는 [] (Pillow 없음·치수 불명·불필요·실패).
+    폭은 원본 그대로라 각 밴드 비율이 표준에 가까워 빌더가 전폭(6.4in)으로 균일 렌더한다."""
+    try:
+        from PIL import Image
+    except ImportError:
+        return []
+    size = image_size(path)
+    if not size or size[0] == 0:
+        return []
+    w, h = size
+    tile_h = max(1, round(w / STD_VP_RATIO))       # 표준 비율 밴드 높이(px)
+    if h <= tile_h * 1.12:                          # 한 밴드 안에 들어오면 분할 불필요
+        return []
+    n = min(6, max(2, math.ceil(h / tile_h)))
+    try:
+        im = Image.open(path).convert("RGB")
+        gw = 96                                     # 가로 축소해 행 스캔 비용 절감
+        gray = im.convert("L").resize((gw, h))
+        px = gray.load()
+        safety = _safe_cut_rows(gw, h, px)
+    except Exception:
+        return []
+
+    # 목표 경계 y = k*h/n 를 ±tol 안의 '가장 배경다운 행'으로 스냅(요소 관통 회피)
+    tol = int(tile_h * 0.42)
+    cuts = [0]
+    for k in range(1, n):
+        target = round(h * k / n)
+        lo, hi = max(cuts[-1] + tile_h // 3, target - tol), min(h - tile_h // 3, target + tol)
+        if lo >= hi:
+            cuts.append(target)
+            continue
+        best_y, best_s = target, 2.0
+        for y in range(lo, hi):
+            # 목표에서 멀수록 소폭 페널티 — 동점이면 목표에 가까운 안전 행 선택
+            s = safety[y] + abs(y - target) / (tol * 40.0)
+            if s < best_s:
+                best_s, best_y = s, y
+        cuts.append(best_y)
+    cuts.append(h)
+
+    stem, ext = os.path.splitext(os.path.basename(path))
+    bands_dir = os.path.join(out_dir, "_bands")
+    os.makedirs(bands_dir, exist_ok=True)
+    paths = []
+    try:
+        for i in range(len(cuts) - 1):
+            top, bot = cuts[i], cuts[i + 1]
+            if bot - top < 8:
+                continue
+            bp = os.path.join(bands_dir, f"{stem}_b{i + 1}of{n}{ext}")
+            im.crop((0, top, w, bot)).save(bp)
+            paths.append(bp)
+    except Exception:
+        return []
+    return paths if len(paths) > 1 else []
+
+
 # ---------- 슬라이드 플랜 ----------
 
 def collect_items(blocks):
@@ -230,10 +309,10 @@ def _seg_layout(visual, img_path, need_lines):
 
     예산은 정적 상수가 아니라 그 컷의 시각 요소 실높이가 남기는 공간에서 계산한다
     — 이미지가 큰 컷에서 텍스트가 슬라이드 밖으로 넘치는 것을 분할 단계에서 막는다.
-    상(이미지)/하(설명) 배치에서 설명(need_lines)이 표준 프레임의 예산을 넘으면,
-    분할보다 이미지 프레임을 하한(IMG_MIN_H)까지 줄여 한 컷에 담는 것을 우선한다
-    — 컷당 항목 1~2개짜리 과분할을 막는다. 확정 프레임 높이는 플랜에 실려
-    render_screen 이 그대로 쓴다(분할 예산과 렌더 기하의 일치 보장)."""
+    상(이미지)/하(설명) 배치에서 이미지는 축소하지 않고 항상 전폭(표준 프레임)으로
+    둔다 — 폭이 매뉴얼 일관성의 앵커이기 때문이다. 설명이 예산을 넘으면 이미지를
+    줄이는 대신 분할 단계가 추가 컷으로 나눈다(각 컷이 동일 크기 이미지를 반복).
+    세로로 과하게 긴 이미지(비율<TALL_RATIO_MIN)는 이 함수 이전에 타일 분할된다."""
     if visual is None:
         return WIDE_EA, PLAIN_LINES, None
     horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
@@ -247,11 +326,6 @@ def _seg_layout(visual, img_path, need_lines):
         std_h = H_FRAME_H.inches
     avail = TEXT_BOTTOM.inches - IMG_Y.inches - (0.05 + CAP_H.inches + 0.08)
     budget = max(2, int((avail - std_h) / LINE_H))
-    if need_lines > budget:
-        want_h = avail - need_lines * LINE_H
-        if want_h >= IMG_MIN_H:
-            return WIDE_EA, need_lines, want_h        # 프레임 축소로 한 컷 수용
-        return WIDE_EA, max(2, int((avail - IMG_MIN_H) / LINE_H)), IMG_MIN_H
     return WIDE_EA, budget, std_h
 
 
@@ -301,6 +375,37 @@ def split_section(sec, draft_dir, shots_dir):
         need = sum(text_lines(plain(t), wea) for _, t in items) + extra
         width_ea, budget, frame_h = _seg_layout(visual, img_path, need)
         budget = max(2, budget - extra)
+
+        # 세로 긴 이미지: 폭을 줄이는 대신 표준 비율 밴드로 타일 분할한다(요소 경계
+        # 스냅). 폭이 균일성 앵커이므로 모든 밴드가 전폭 6.4in로 렌더된다. 설명은
+        # 첫 밴드에 싣고, 이후 밴드는 '(계속 k/N)' 이미지 전용 연속 컷으로 둔다.
+        bands = []
+        if PORTRAIT and img_path and TALL_RATIO_MIN and image_ratio(img_path) < TALL_RATIO_MIN:
+            bands = tile_tall_image(img_path, shots_dir)
+        if len(bands) > 1:
+            nb = len(bands)
+            base_cap = (image.get("caption") if image else "") or ""
+            # 항목(①②③…)을 밴드 높이 비율로 순차 배분한다 — 배지는 시각 순서(위→아래)
+            # 이고 항목도 그 순서이므로, 각 밴드가 자기 배지에 해당하는 설명만 싣는다.
+            bh = [(image_size(bp) or (0, 1))[1] or 1 for bp in bands]
+            th = sum(bh) or 1
+            dist, pos = [], 0
+            for bi in range(nb):
+                cnt = (len(items) - pos) if bi == nb - 1 else round(len(items) * bh[bi] / th)
+                dist.append(items[pos:pos + max(0, cnt)])
+                pos += max(0, cnt)
+            for bi, bpath in enumerate(bands):
+                br = image_ratio(bpath)
+                cap = f"{base_cap} ({bi + 1}/{nb})".strip() if base_cap else ""
+                plans.append({
+                    "kind": "screen", "sec": sec,
+                    "image": image, "img_path": bpath, "ph": None,
+                    "horizontal": False,
+                    "frame_h": min(BODY_W.inches / br, PORT_IMG_MAX_H.inches),
+                    "caption": cap,
+                    "items": dist[bi],
+                })
+            continue
 
         chunks = [[]]
         used = 0
@@ -739,7 +844,10 @@ def render_screen(prs, plan_item, ch_of, page_no):
                      align=PP_ALIGN.CENTER)
 
         cap_y = img_y + frame_h + Inches(0.05)  # 캡션도 프레임 하단 고정 위치
-        caption = (image.get("caption") if image else "") or (f"[사진 -] {ph['name']} (추후 삽입)" if ph else "")
+        # 타일 밴드는 plan 이 캡션을 직접 지정(원 캡션 + "(계속 k/N)")한다
+        caption = plan_item.get("caption")
+        if caption is None:
+            caption = (image.get("caption") if image else "") or (f"[사진 -] {ph['name']} (추후 삽입)" if ph else "")
         if caption:
             tf = add_text(slide, frame_x, cap_y, frame_w, CAP_H)
             add_para(tf, caption, 9.5, color=MUTED, align=PP_ALIGN.CENTER)
@@ -766,9 +874,14 @@ def render_screen(prs, plan_item, ch_of, page_no):
 
 def self_check(prs, combined_idx=frozenset()):
     problems = []
+    pic_widths = []
     for idx, slide in enumerate(prs.slides, start=1):
         item_count = 0
         for shape in slide.shapes:
+            # 스크린샷 렌더 폭 수집 — 매뉴얼 전체에서 캡처가 균일 폭으로 들어가야
+            # 일관성이 유지된다(폭이 균일성 앵커). shape_type 13 = PICTURE.
+            if getattr(shape, "shape_type", None) == 13 and shape.width:
+                pic_widths.append(shape.width)
             if not shape.has_text_frame:
                 continue
             for p in shape.text_frame.paragraphs:
@@ -785,6 +898,19 @@ def self_check(prs, combined_idx=frozenset()):
         # 짧은 항목이 합산되므로 제외한다 (높이는 병합 예산이 이미 보장)
         if item_count > MAX_ITEMS and idx not in combined_idx:
             problems.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {MAX_ITEMS} 초과)")
+
+    # 렌더 폭 균일 게이트 — 세로형 전용(가로형은 좌/우·상/하 배치라 이미지 폭이
+    # 본래 다르다). 세로 긴 캡처가 조용히 폭 축소되어 다른 장표와 크기가 달라지는
+    # 것을 잡는다. 폭이 매뉴얼 일관성의 앵커다.
+    if PORTRAIT and pic_widths:
+        lo, hi = min(pic_widths), max(pic_widths)
+        if hi and (hi - lo) / hi > 0.03:
+            problems.append(f"세로형 스크린샷 렌더 폭 편차 {round((hi - lo) / hi * 100)}% "
+                            f"({round(lo / 914400, 2)}~{round(hi / 914400, 2)}in) — 세로 긴 캡처의 "
+                            "폭 축소 의심. 표준 뷰포트로 재캡처하거나 논리 분할 권장")
+        elif lo < BODY_W * 0.90:
+            problems.append(f"세로형 스크린샷 폭 {round(lo / 914400, 2)}in < 전폭 90% "
+                            "— 폭 축소 렌더(타일 실패 또는 비표준 비율)")
     return problems
 
 

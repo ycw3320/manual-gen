@@ -61,6 +61,22 @@ def native_ratio(pic):
         return None
 
 
+SEC_NO_RE = re.compile(r"^\d+\.\d+(\.\d+)?\s")
+
+
+def walk_shapes(shapes):
+    """그룹 도형 내부까지 재귀 순회한다 — 외부 빌더(서식 복제)가 그림을 그룹에 넣으면
+    최상위만 훑는 검사는 테두리 누락을 통째로 놓친다."""
+    for sh in shapes:
+        if getattr(sh, "shape_type", None) == 6:      # GROUP
+            try:
+                yield from walk_shapes(sh.shapes)
+                continue
+            except AttributeError:
+                pass
+        yield sh
+
+
 def verify(path, draft=None, shots_dir=None):
     prs = Presentation(path)
     W, H = prs.slide_width, prs.slide_height
@@ -72,9 +88,10 @@ def verify(path, draft=None, shots_dir=None):
     bordered = 0
     for idx, slide in enumerate(prs.slides, start=1):
         item_count = 0
+        sec_titles = 0            # 한 장에 절 소제목이 여럿 = 개요 병합 장표
         slide_has_pic = False
         slide_has_caption = False
-        for shape in slide.shapes:
+        for shape in walk_shapes(slide.shapes):
             if getattr(shape, "shape_type", None) == 13:  # PICTURE
                 n_pics += 1
                 slide_has_pic = True
@@ -98,12 +115,19 @@ def verify(path, draft=None, shots_dir=None):
                     errors.append(f"슬라이드 {idx}: 마크다운 잔재 — {text[:40]}")
                 if PHOTO_RE.search(text):
                     slide_has_caption = True
+                if "이미지 파일 누락" in text:
+                    errors.append(f"슬라이드 {idx}: 작업 메모가 본문에 유출 — '{text.strip()[:40]}' "
+                                  "(캡처 미확보 화면은 placeholder 규약으로 표기할 것)")
                 stripped = text.strip()
                 first = stripped[:1]
+                if SEC_NO_RE.match(stripped) and len(stripped) < 40:
+                    sec_titles += 1
                 if first == "•" or (first and first in CIRCLED) or re.match(r"^(?!0)\d{1,2}\.\s", stripped):
                     item_count += 1
-        if item_count > MAX_ITEMS:
-            warns.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {MAX_ITEMS} 초과)")
+        # 개요 병합 장표(절 소제목 2개 이상)는 여러 절의 짧은 항목이 합산되므로 상한을 완화
+        limit = MAX_ITEMS * max(1, sec_titles) if sec_titles >= 2 else MAX_ITEMS
+        if item_count > limit:
+            warns.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {limit} 초과)")
         if slide_has_pic and not slide_has_caption:
             warns.append(f"슬라이드 {idx}: 그림은 있는데 [사진 N] 캡션이 없습니다")
 
@@ -113,6 +137,13 @@ def verify(path, draft=None, shots_dir=None):
         if hi and (hi - lo) / hi > 0.03:
             warns.append(f"세로형 스크린샷 렌더 폭 편차 {round((hi - lo) / hi * 100)}% "
                          f"({round(lo / 914400, 2)}~{round(hi / 914400, 2)}in) — 균일 폭 규격 위반 의심")
+        # 절대 폭 검사 — 전 캡처가 '똑같이' 축소되면 편차는 0 이라 위 검사를 통과한다.
+        # 본문 전폭(슬라이드 폭 - 좌우 여백 0.55in) 의 90% 미만이면 축소 렌더로 본다.
+        full_w = W - 2 * 502920      # 0.55in = 502920 EMU
+        if full_w > 0 and lo < full_w * 0.90:
+            warns.append(f"세로형 스크린샷 폭 {round(lo / 914400, 2)}in < 본문 전폭"
+                         f"({round(full_w / 914400, 2)}in)의 90% — 세로 긴 캡처가 축소 렌더된 "
+                         "상태로 보입니다(타일 분할 실패·비표준 비율 확인)")
 
     # 미확정 마킹
     all_text = "\n".join("".join(r.text for r in p.runs)

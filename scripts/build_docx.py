@@ -225,8 +225,22 @@ def self_check(doc_x, shots_dir):
         if lo < IMG_W_CM * 360000 * 0.90:
             problems.append(f"스크린샷 폭 {round(lo / 360000, 1)}cm < 규격({IMG_W_CM}cm)의 90% "
                             "— 세로 긴 캡처가 축소 삽입된 상태(타일 분할 실패 확인)")
-    for p in doc_x.paragraphs:
-        t = p.text
+    if widths:
+        # 세로 넘침 — 치수를 모르는 포맷은 높이 상한 로직을 건너뛰어 A4 본문(약 25.7cm)을
+        # 훌쩍 넘는 이미지가 삽입될 수 있는데, 폭만 보는 검사는 이를 통과시킨다
+        too_tall = [s for s in doc_x.inline_shapes if s.height > IMG_MAX_H_CM * 360000 * 1.02]
+        if too_tall:
+            hs = ", ".join(f"{round(s.height / 360000)}cm" for s in too_tall[:3])
+            problems.append(f"이미지 높이 상한({IMG_MAX_H_CM}cm) 초과 {len(too_tall)}건({hs}) "
+                            "— A4 본문에서 잘립니다(치수를 못 읽는 포맷이면 PNG 로 재저장)")
+    # 본문 문단 + 표 셀 문단 모두 검사한다 — python-docx 의 doc.paragraphs 는 표 셀을
+    # 포함하지 않아, '항목 설명 표'에 들어간 잔재·유출이 통째로 빠진다
+    texts = [p.text for p in doc_x.paragraphs]
+    for tb in doc_x.tables:
+        for row in tb.rows:
+            for cell in row.cells:
+                texts.extend(p.text for p in cell.paragraphs)
+    for t in texts:
         if "**" in t or "![" in t:
             problems.append(f"마크다운 잔재 의심 — {t[:40]}")
         if "이미지 파일 누락" in t:

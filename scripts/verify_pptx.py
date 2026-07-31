@@ -64,17 +64,39 @@ def native_ratio(pic):
 SEC_NO_RE = re.compile(r"^\d+\.\d+(\.\d+)?\s")
 
 
-def walk_shapes(shapes):
-    """그룹 도형 내부까지 재귀 순회한다 — 외부 빌더(서식 복제)가 그림을 그룹에 넣으면
-    최상위만 훑는 검사는 테두리 누락을 통째로 놓친다."""
+def walk_shapes(shapes, scale=1.0):
+    """그룹 도형 내부까지 재귀 순회하며 (도형, 배율)을 돌려준다.
+
+    그룹 자식의 width 는 **그룹 좌표계 값**이라 그룹이 축소돼 있으면 실제 렌더 폭과
+    다르다 — 배율(ext/chExt)을 곱해야 실측이 된다. 이 보정이 없으면 그룹으로 감싸
+    50% 축소한 산출물이 폭 게이트를 그대로 통과한다."""
     for sh in shapes:
         if getattr(sh, "shape_type", None) == 6:      # GROUP
             try:
-                yield from walk_shapes(sh.shapes)
-                continue
+                child = sh.shapes
             except AttributeError:
+                yield sh, scale
+                continue
+            sub = scale
+            try:
+                # 배율은 grpSpPr/a:xfrm 의 ext(그룹 크기) 대 chExt(자식 좌표계 크기)
+                gsp = sh._element.find(
+                    "{http://schemas.openxmlformats.org/presentationml/2006/main}grpSpPr")
+                xfrm = gsp.find(
+                    "{http://schemas.openxmlformats.org/drawingml/2006/main}xfrm") \
+                    if gsp is not None else None
+                if xfrm is not None:
+                    ext = xfrm.find("{http://schemas.openxmlformats.org/drawingml/2006/main}ext")
+                    chext = xfrm.find("{http://schemas.openxmlformats.org/drawingml/2006/main}chExt")
+                    if ext is not None and chext is not None:
+                        cx, chcx = int(ext.get("cx", 0)), int(chext.get("cx", 0))
+                        if chcx:
+                            sub = scale * (cx / chcx)
+            except (AttributeError, ValueError, TypeError):
                 pass
-        yield sh
+            yield from walk_shapes(child, sub)
+            continue
+        yield sh, scale
 
 
 def verify(path, draft=None, shots_dir=None):
@@ -91,11 +113,11 @@ def verify(path, draft=None, shots_dir=None):
         sec_titles = 0            # 한 장에 절 소제목이 여럿 = 개요 병합 장표
         slide_has_pic = False
         slide_has_caption = False
-        for shape in walk_shapes(slide.shapes):
+        for shape, sc in walk_shapes(slide.shapes):
             if getattr(shape, "shape_type", None) == 13:  # PICTURE
                 n_pics += 1
                 slide_has_pic = True
-                pic_widths.append(shape.width)
+                pic_widths.append(int(shape.width * sc))   # 그룹 배율 반영한 실제 렌더 폭
                 if has_border(shape):
                     bordered += 1
                 else:

@@ -52,6 +52,20 @@ def _badge_count(img_path):
         return None
 
 
+def _style_texts(b):
+    """문체 린트 대상 텍스트 — 상호참조용 _block_texts 보다 넓다(접근 경로·캡션·표 셀까지).
+    산출물에 실리는 모든 문자열이 독자 언어여야 하기 때문이다."""
+    out = list(_block_texts(b))
+    if b["type"] == "access":
+        out.append(b.get("text", ""))
+    elif b["type"] == "image":
+        out.append(b.get("caption", ""))
+    elif b["type"] == "table":
+        for row in b.get("rows", []):
+            out.extend(row)
+    return out
+
+
 def _block_texts(b):
     """텍스트 검사 대상 블록의 문자열 목록 (para/note/bullets/numbered)."""
     if b["type"] == "bullets":
@@ -64,18 +78,24 @@ def _block_texts(b):
 # 최종 독자용 문서에 남으면 안 되는 개발 용어 — 문체 린트 (manual-template.md 3절)
 # \b 는 한글을 단어 문자로 취급해 "API를"을 놓치므로 ASCII 경계로 검사한다
 TECH_TERMS_RE = re.compile(
-    r"(?<![A-Za-z])(?:API|DB|URL|JSON|SQL|HTML|CSS|UI|UX)(?![A-Za-z])"
+    r"(?<![A-Za-z])(?:API|DB|URL|JSON|SQL|HTML|CSS|UI|UX|VARCHAR)(?![A-Za-z])"
     r"|엔드포인트|파라미터|렌더링|컴포넌트|쿼리|백엔드|프론트엔드|프런트엔드"
     # 개발자에게만 자명한 내부 개념 — 독자는 화면에서 이 단어를 볼 일이 없다
-    r"|컬럼|테이블(?!\s*형태)|레코드|엔티티|필드값|스키마|인덱싱"
+    r"|컬럼|테이블(?!\s*형태)|레코드|엔티티|필드값|스키마|인덱싱|데이터베이스|클라이언트"
     r"|세션|캐시|쿠키|토큰|라우트|리다이렉트|콜백|트리거|배치 작업|크론"
     r"|밸리데이션|유효성 검사 로직|파싱|직렬화|동기화 처리|인스턴스|디플로이|배포 서버"
-    r"|프로세스|스레드|모듈|라이브러리|프레임워크|리포지토리|커밋|브랜치")
-IMPERATIVE_RE = re.compile(r"하시오")
-# 화면 라벨 표기([등록] 등)와 [사진 N] 은 화면에 그대로 보이는 단어라 검사 대상이 아니다
-BRACKET_RE = re.compile(r"\[[^\]]*\]")
-# 영문 식별자 나열(email·name·affiliation 등) — 화면 라벨이 아니라 내부 필드명
-EN_FIELD_RE = re.compile(r"(?<![A-Za-z])[a-z][a-z_]{2,}(?:\s*[·,]\s*[a-z][a-z_]{2,}){1,}")
+    r"|프로세스|스레드|모듈|라이브러리|프레임워크|리포지토리|커밋|브랜치",
+    re.I)   # 소문자 api·url·json 도 잡는다
+IMPERATIVE_RE = re.compile(r"하시오|하십시오|(?<![가-힣])[가-힣]{1,4}하라(?![가-힣])")
+# 화면 라벨 표기([등록] 등)와 [사진 N] 은 화면에 그대로 보이는 단어라 검사 대상이 아니다.
+# 단 라벨 안에 내부 용어를 몰아넣는 우회를 막기 위해, 라벨이 지나치게 길면(공백 2개 초과)
+# 화면 라벨로 보지 않고 검사 대상으로 남긴다.
+BRACKET_RE = re.compile(r"\[[^\]\n]{0,24}\]")
+# 영문 식별자 나열/단독 — 화면 라벨이 아니라 내부 필드명(email·name / email name / userName)
+EN_FIELD_RE = re.compile(
+    r"(?<![A-Za-z])[a-z][a-z_]{2,}(?:\s*[·,/]\s*|\s+)[a-z][a-z_]{2,}"
+    r"(?:(?:\s*[·,/]\s*|\s+)[a-z][a-z_]{2,})*"
+    r"|(?<![A-Za-z])[a-z]+[A-Z][a-zA-Z]*(?![A-Za-z])")
 
 
 def validate(doc, draft_dir, shots_dir, raw_text=""):
@@ -252,25 +272,35 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
             warns.append(f"미확정 마킹 잔존: {hits} — 해소하거나 최종 보고에 명시할 것")
 
     # 문체 린트: 독자는 개발 지식이 전무하다는 전제 — 화면에 보이는 단어([등록] 등)는
-    # 정당하고, 시스템 내부 개념(컬럼·세션·필드명)은 독자가 읽을 수 없다 (표기 규약 3절)
+    # 정당하고, 시스템 내부 개념(컬럼·세션·필드명)은 독자가 읽을 수 없다 (표기 규약 3절).
+    # **제목·표 셀·접근 경로·캡션·장 도입부까지 전부 본다** — 본문만 보면 목차 슬라이드에
+    # 내부 용어가 실려 나가는 경로가 열린다.
+    def lint(label, texts):
+        for t in texts:
+            if not t:
+                continue
+            t_out = BRACKET_RE.sub(" ", t)   # 대괄호 안은 화면 표기 그대로라 제외
+            tm = TECH_TERMS_RE.search(t_out)
+            if tm:
+                warns.append(f"[{label}] 기술 용어 '{tm.group()}' — 독자 언어로 바꿀 것: {t[:40]}")
+            fm = EN_FIELD_RE.search(t_out)
+            if fm:
+                warns.append(f"[{label}] 영문 식별자 '{fm.group()[:30]}' — 화면에 보이는 "
+                             f"한글 항목명으로 옮길 것: {t[:40]}")
+            if IMPERATIVE_RE.search(t):
+                warns.append(f"[{label}] 명령형 종결 — 존댓말 평서형으로: {t[:40]}")
+
+    lint("문서 제목", [doc.get("title", "")])
     for ch in doc["chapters"]:
+        ch_label = f"{ch['num']}. {ch['title']}".strip()
+        lint(ch_label, [ch["title"]])
+        for b in ch.get("intro", []):          # 장 도입부도 산출물에 실린다
+            lint(ch_label, _style_texts(b))
         for sec in ch["sections"]:
+            label = f"{sec['num']} {sec['title']}".strip()
+            lint(label, [sec["title"]])
             for b in sec["blocks"]:
-                for t in _block_texts(b):
-                    # 대괄호 안은 화면 표기 그대로이므로 용어 검사에서 제외한다
-                    t_out = BRACKET_RE.sub(" ", t)
-                    tm = TECH_TERMS_RE.search(t_out)
-                    if tm:
-                        warns.append(f"[{sec['num']} {sec['title']}] 기술 용어 '{tm.group()}' — "
-                                     f"독자 언어로 바꿀 것: {t[:40]}")
-                    fm = EN_FIELD_RE.search(t_out)
-                    if fm:
-                        warns.append(f"[{sec['num']} {sec['title']}] 영문 식별자 나열 "
-                                     f"'{fm.group()[:30]}' — 화면에 보이는 한글 항목명으로 "
-                                     f"옮길 것: {t[:40]}")
-                    if IMPERATIVE_RE.search(t):
-                        warns.append(f"[{sec['num']} {sec['title']}] 명령형 종결(하시오) — "
-                                     f"존댓말 평서형으로: {t[:40]}")
+                lint(label, _style_texts(b))
 
     return errors, warns
 

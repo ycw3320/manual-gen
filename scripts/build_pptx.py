@@ -150,26 +150,34 @@ def theme_from_template(path):
     if not dark or not accent:
         return None
     # 무채색(회색조) 템플릿: hue 가 0 으로 떨어져 원본에 없는 색조(붉은빛)를 발명하게 되므로
-    # 파생을 포기하고 기본 테마를 유지한다
+    # 파생을 포기하고 기본 테마를 유지한다. 둘 중 **하나라도** 무채색이면 그 축의 파생이
+    # 왜곡되므로 OR 로 판정한다(AND 로 두면 유채색 dark + 무채색 accent 조합이 빠져나간다).
     _, _, ds0 = _hex_hls(dark)
     _, _, as0 = _hex_hls(accent)
-    if ds0 < 0.08 and as0 < 0.08:
+    if ds0 < 0.08 or as0 < 0.08:
         return None
-    # dark 는 표지·간지의 배경 — 밝은 값이 오면(라이트 테마 템플릿) accent 를 어둡게 내려 사용
+    # DARK 는 표지·간지의 '배경'이면서 CONTENTS·헤딩의 '흰 배경 위 텍스트'로도 쓰인다 —
+    # 밝은 dk2(예: Office Gold)면 배경 위 흰 글씨도, 흰 배경 위 제목도 모두 안 읽힌다.
+    # 대비 기준을 만족할 때까지 어둡게 내린다(색상·채도 유지).
     dh, dl, ds = _hex_hls(dark)
-    if dl > 0.5:
-        ah, al, as_ = _hex_hls(accent)
-        dark = _hls_hex(ah, 0.18, max(0.30, as_ * 0.8))
+    if dl > 0.5 or _contrast_on_white(dark) < 4.5:
+        dark = _darken_for_white_bg(dark)
         dh, dl, ds = _hex_hls(dark)
     ah, al, as_ = _hex_hls(accent)
     # ACCENT 는 흰 배경 위 본문 색으로도 쓰인다('접근 경로'·CONTENTS 액센트 바) —
     # 밝은 accent(노랑·라이트그린 등)를 그대로 쓰면 대비가 1.4:1 수준이라 읽히지 않는다.
     # 본문용만 대비 기준까지 어둡게 하고, 표지·간지의 원색은 ACCENT_ON_DARK 로 보존한다.
     accent_text = _darken_for_white_bg(accent)
+    # 반대 방향 가드: 어두운 accent(예: Blue Darker 50%)는 어두운 표지·간지 위에서
+    # 보이지 않으므로, 배경(dark)보다 충분히 밝지 않으면 명도를 올려 쓴다
+    accent_dark_bg = accent
+    ad_h, ad_l, ad_s = _hex_hls(accent)
+    if ad_l < dl + 0.18:
+        accent_dark_bg = _hls_hex(ad_h, min(0.72, dl + 0.30), max(0.35, ad_s))
     # 보조 팔레트 파생 — 기본 3종 테마의 명도·채도 관계를 따른다
     global THEME, DARK, ACCENT, ACCENT_ON_DARK, DARK_SOFT, DARK_SOFTER, HEAD_NUM
     THEME = "template"
-    DARK, ACCENT, ACCENT_ON_DARK = _rgb(dark), _rgb(accent_text), _rgb(accent)
+    DARK, ACCENT, ACCENT_ON_DARK = _rgb(dark), _rgb(accent_text), _rgb(accent_dark_bg)
     DARK_SOFT = _rgb(_hls_hex(dh, 0.80, min(0.45, max(0.12, ds))))
     DARK_SOFTER = _rgb(_hls_hex(dh, 0.68, min(0.30, max(0.10, ds * 0.7))))
     HEAD_NUM = _rgb(_hls_hex(ah, 0.70, min(0.75, max(0.25, as_))))
@@ -410,13 +418,26 @@ def _marker_no(marker):
     return int(m.group(1)) if m else None
 
 
-def _band_budget(frame_h_in, extra_lines=0):
+def intro_img_y(paras, access):
+    """개요·접근 경로를 렌더한 뒤의 이미지 시작 y(in) — render_screen 과 동일 수식.
+
+    개요가 길면 이미지 프레임이 아래로 밀리는데(img_y = max(IMG_Y, y)), 예산을 상수
+    IMG_Y 로만 계산하면 그만큼 본문이 슬라이드 밖으로 넘친다."""
+    y = 1.2
+    if paras or access:
+        est = sum(text_lines(plain(p), INTRO_EA) for p in paras)
+        y += 0.28 * est + (0.36 if access else 0.02) + 0.08
+    return max(IMG_Y.inches, y)
+
+
+def _band_budget(frame_h_in, extra_lines=0, img_y_in=None):
     """밴드(또는 상/하 배치) 컷에서 이미지 아래에 남는 설명 줄 예산."""
-    avail = TEXT_BOTTOM.inches - IMG_Y.inches - (0.05 + CAP_H.inches + 0.08)
+    top = IMG_Y.inches if img_y_in is None else img_y_in
+    avail = TEXT_BOTTOM.inches - top - (0.05 + CAP_H.inches + 0.08)
     return max(2, int((avail - frame_h_in) / LINE_H) - extra_lines)
 
 
-def _seg_layout(visual, img_path, need_lines):
+def _seg_layout(visual, img_path, need_lines, img_y=None):
     """세그먼트의 (줄당 문자 수, 설명 줄 예산, 확정 프레임 높이 in|None).
 
     예산은 정적 상수가 아니라 그 컷의 시각 요소 실높이가 남기는 공간에서 계산한다
@@ -425,18 +446,20 @@ def _seg_layout(visual, img_path, need_lines):
     둔다 — 폭이 매뉴얼 일관성의 앵커이기 때문이다. 설명이 예산을 넘으면 이미지를
     줄이는 대신 분할 단계가 추가 컷으로 나눈다(각 컷이 동일 크기 이미지를 반복).
     세로로 과하게 긴 이미지(비율<TALL_RATIO_MIN)는 이 함수 이전에 타일 분할된다."""
+    if img_y is None:
+        img_y = IMG_Y.inches
     if visual is None:
         return WIDE_EA, PLAIN_LINES, None
     horizontal = bool(img_path) and image_ratio(img_path) >= 1.45
     if not (PORTRAIT or horizontal):
         # 가로형 좌(이미지)/우(설명) — 우측 컬럼은 이미지 상단부터 하한까지 전부 쓴다
-        return SIDE_EA, int((TEXT_BOTTOM.inches - IMG_Y.inches) / LINE_H), None
+        return SIDE_EA, int((TEXT_BOTTOM.inches - img_y) / LINE_H), None
     # 표준 프레임 높이: 세로형 이미지는 비율 기반 실높이(상한 반영), 그 외는 프레임 규격
     if img_path and PORTRAIT:
         std_h = min(H_FRAME_W.inches / image_ratio(img_path), PORT_IMG_MAX_H.inches)
     else:
         std_h = H_FRAME_H.inches
-    avail = TEXT_BOTTOM.inches - IMG_Y.inches - (0.05 + CAP_H.inches + 0.08)
+    avail = TEXT_BOTTOM.inches - img_y - (0.05 + CAP_H.inches + 0.08)
     budget = max(2, int((avail - std_h) / LINE_H))
     if not PORTRAIT and need_lines > budget:
         # 가로형 상/하 배치: 이미지는 프레임에 맞춰 넣는 방식(fit)이라 비율에 따라 폭이
@@ -493,7 +516,10 @@ def split_section(sec, draft_dir, shots_dir):
         if si == last_si and notes:
             extra += sum(text_lines(plain(nt), wea) for nt in notes)
         need = sum(text_lines(plain(t), wea) for _, t in items) + extra
-        width_ea, budget, frame_h = _seg_layout(visual, img_path, need)
+        # 개요·접근 경로는 첫 컷에만 실리고 그만큼 이미지가 아래로 밀린다 — 예산도
+        # 그 실제 시작 위치에서 계산해야 본문이 슬라이드 밖으로 나가지 않는다
+        seg_img_y = intro_img_y(paras, access) if si == 0 else IMG_Y.inches
+        width_ea, budget, frame_h = _seg_layout(visual, img_path, need, seg_img_y)
         budget = max(2, budget - extra)
 
         # 세로 긴 이미지: 폭을 줄이는 대신 표준 비율 밴드로 타일 분할한다(요소 경계
@@ -543,14 +569,30 @@ def split_section(sec, draft_dir, shots_dir):
                 bframe_h = min(BODY_W.inches / br, PORT_IMG_MAX_H.inches)
                 # 밴드마다 이미지 높이가 다르므로 예산도 밴드별로 계산하고, 그 예산으로
                 # 다시 청크 분할한다 — 배지가 한 밴드에 몰려도 본문이 넘치지 않는다
-                bextra = 0
+                # 표는 첫 컷, ※주의는 마지막 컷에만 렌더되므로 **그 컷의 예산에서만** 뺀다
+                # — 밴드의 모든 청크에서 빼면 컷이 불필요하게 잘게 쪼개진다
+                first_extra = last_extra = 0
                 if bi == 0 and si == 0 and tables:
-                    bextra += sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
-                                  for tb in tables)
+                    first_extra = sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
+                                      for tb in tables)
                 if bi == nb - 1 and si == last_si and notes:
-                    bextra += sum(text_lines(plain(nt), WIDE_EA) for nt in notes)
+                    last_extra = sum(text_lines(plain(nt), WIDE_EA) for nt in notes)
+                # 첫 밴드는 개요·접근 경로 뒤에 오므로 밀린 시작 위치로 예산을 잡는다
+                budget_n = _band_budget(bframe_h, 0,
+                                        seg_img_y if (bi == 0 and si == 0) else IMG_Y.inches)
+                if first_extra and dist[bi]:
+                    head = _chunk_items(dist[bi], WIDE_EA, max(2, budget_n - first_extra))[0]
+                    rest = dist[bi][len(head):]
+                    bchunks = [head] + (_chunk_items(rest, WIDE_EA, budget_n) if rest else [])
+                else:
+                    bchunks = _chunk_items(dist[bi], WIDE_EA, budget_n)
+                if last_extra and bchunks:
+                    tail = bchunks[-1]
+                    if sum(text_lines(plain(t), WIDE_EA) for _, t in tail) + last_extra > budget_n:
+                        bchunks = bchunks[:-1] + _chunk_items(tail, WIDE_EA,
+                                                              max(2, budget_n - last_extra))
                 cap = f"{base_cap} ({bi + 1}/{nb})".strip() if base_cap else ""
-                for chunk in _chunk_items(dist[bi], WIDE_EA, _band_budget(bframe_h, bextra)):
+                for chunk in bchunks:
                     plans.append({
                         "kind": "screen", "sec": sec,
                         "image": image, "img_path": bpath, "ph": None,

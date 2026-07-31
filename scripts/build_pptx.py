@@ -287,9 +287,10 @@ LINE_H = 0.275  # 설명 항목 줄당 높이(in) — 11.5pt + space_after 6pt
 def _load_badge_positions(img_path):
     """이미지에 대응하는 markers.json 에서 배지별 세로 위치를 읽는다.
 
-    반환: 배지 번호(n) 오름차순의 y_frac 목록(이미지 전체 높이 대비 배지 상단, 0~1).
-    markers.json 이 없거나 파싱 실패면 []. cdp_capture --mark 가 저장한 좌표를 써서
-    타일 밴드에 배지=항목을 정확히 배분하기 위한 용도(없으면 높이 비율로 폴백)."""
+    반환: {배지 번호(n): y_frac} — 이미지 전체 높이 대비 배지 상단(0~1).
+    markers.json 이 없거나 파싱 실패면 {}. **번호를 키로 돌려주는 이유**: 순서 목록으로
+    돌려주면 미발견(found=false) 배지가 섞였을 때 원고 항목과 한 칸씩 밀려 엉뚱한
+    밴드로 배분된다. 원고 마커(①=1, '1.'=1)와 번호로 조인해야 안전하다."""
     import json
     stem = os.path.splitext(img_path)[0]
     cands = []
@@ -302,12 +303,60 @@ def _load_badge_positions(img_path):
         try:
             with open(mp, encoding="utf-8") as f:
                 data = json.load(f)
-            ms = sorted((m for m in data.get("markers", []) if m.get("found")),
-                        key=lambda m: m.get("n", 0))
-            return [float(m.get("y", 0.0)) for m in ms]
+            out = {}
+            for m in data.get("markers", []):
+                if m.get("found") and m.get("n"):
+                    out[int(m["n"])] = float(m.get("y", 0.0))
+            return out
         except (OSError, ValueError, KeyError, TypeError):
             continue
-    return []
+    return {}
+
+
+def _chunk_items(items, width_ea, budget):
+    """항목을 슬라이드당 상한(MAX_ITEMS)·줄 예산으로 나눈 청크 목록을 돌려준다.
+
+    일반 컷과 타일 밴드 컷이 **같은 분할 규칙**을 쓰게 하려고 분리했다 — 밴드 경로가
+    이 로직을 건너뛰면 항목이 한 장에 몰려 본문이 슬라이드 밖으로 넘친다."""
+    chunks = [[]]
+    used = 0
+    for marker, text in items:
+        lines = text_lines(plain(text), width_ea)
+        if chunks[-1] and (len(chunks[-1]) >= MAX_ITEMS or used + lines > budget):
+            chunks.append([])
+            used = 0
+        chunks[-1].append((marker, text))
+        used += lines
+
+    # 균형 재배분: 그리디 분할(6+1 등)은 마지막 장에 항목 1~2개만 남는 고아
+    # 슬라이드를 만들므로, 청크 수는 유지한 채 항목을 균등(4+3 등)하게 다시 나눈다
+    if len(chunks) > 1:
+        k, n = len(chunks), len(items)
+        sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
+        balanced, pos = [], 0
+        for size in sizes:
+            balanced.append(items[pos:pos + size])
+            pos += size
+        if all(len(c) <= MAX_ITEMS and
+               sum(text_lines(plain(t), width_ea) for _, t in c) <= budget * 1.2
+               for c in balanced):
+            chunks = balanced
+    return chunks
+
+
+def _marker_no(marker):
+    """항목 마커(①·'1.')를 배지 번호(int)로. 알 수 없으면 None."""
+    mk = (marker or "").strip()
+    if mk and mk[0] in CIRCLED:
+        return CIRCLED.index(mk[0]) + 1
+    m = re.match(r"^(\d{1,2})\.$", mk)
+    return int(m.group(1)) if m else None
+
+
+def _band_budget(frame_h_in, extra_lines=0):
+    """밴드(또는 상/하 배치) 컷에서 이미지 아래에 남는 설명 줄 예산."""
+    avail = TEXT_BOTTOM.inches - IMG_Y.inches - (0.05 + CAP_H.inches + 0.08)
+    return max(2, int((avail - frame_h_in) / LINE_H) - extra_lines)
 
 
 def _seg_layout(visual, img_path, need_lines):
@@ -332,6 +381,14 @@ def _seg_layout(visual, img_path, need_lines):
         std_h = H_FRAME_H.inches
     avail = TEXT_BOTTOM.inches - IMG_Y.inches - (0.05 + CAP_H.inches + 0.08)
     budget = max(2, int((avail - std_h) / LINE_H))
+    if not PORTRAIT and need_lines > budget:
+        # 가로형 상/하 배치: 이미지는 프레임에 맞춰 넣는 방식(fit)이라 비율에 따라 폭이
+        # 이미 달라진다 — 폭 앵커 규격은 세로형 전용이므로, 여기서는 프레임을 하한까지
+        # 줄여 한 컷에 담는 편이 낫다(제거하면 컷당 4줄 제한으로 슬라이드가 3배로 늘어난다).
+        want_h = avail - need_lines * LINE_H
+        if want_h >= IMG_MIN_H:
+            return WIDE_EA, need_lines, want_h
+        return WIDE_EA, max(2, int((avail - IMG_MIN_H) / LINE_H)), IMG_MIN_H
     return WIDE_EA, budget, std_h
 
 
@@ -398,56 +455,54 @@ def split_section(sec, draft_dir, shots_dir):
             for hpx in bh:
                 acc += hpx
                 edges.append(acc / th)
-            # 배지별 y좌표(markers.json)가 있으면 각 배지가 실제로 놓인 밴드에 그 항목을
-            # 정확히 배분한다. 없으면 밴드 높이 비율로 순차 배분(근사 폴백).
-            ys = _load_badge_positions(img_path)
+            # 배지 y좌표(markers.json)가 있으면 각 배지가 실제로 놓인 밴드에 그 항목을
+            # 배분한다 — 원고 마커 번호로 조인하므로 미발견 배지가 섞여도 밀리지 않는다.
+            # 좌표가 없거나 하나도 매칭되지 않으면 밴드 높이 비율로 순차 배분(폴백).
+            ymap = _load_badge_positions(img_path)
             dist = [[] for _ in range(nb)]
-            if len(ys) == len(items) and items:
-                for idx, y in enumerate(ys):
-                    b = next((bi for bi, bot in enumerate(edges) if y < bot), nb - 1)
-                    dist[b].append(items[idx])
-            else:
+            matched, last_b = 0, 0
+            for it in items:
+                no = _marker_no(it[0])
+                y = ymap.get(no) if no is not None else None
+                if y is None:
+                    dist[last_b].append(it)      # 매칭 없는 항목은 직전 항목과 같은 밴드에
+                    continue
+                b = next((bi for bi, bot in enumerate(edges) if y < bot), nb - 1)
+                dist[b].append(it)
+                last_b = b
+                matched += 1
+            if matched == 0:
+                dist = [[] for _ in range(nb)]
                 pos = 0
                 for bi in range(nb):
                     cnt = (len(items) - pos) if bi == nb - 1 else round(len(items) * bh[bi] / th)
                     dist[bi] = items[pos:pos + max(0, cnt)]
                     pos += max(0, cnt)
+
             for bi, bpath in enumerate(bands):
                 br = image_ratio(bpath)
+                bframe_h = min(BODY_W.inches / br, PORT_IMG_MAX_H.inches)
+                # 밴드마다 이미지 높이가 다르므로 예산도 밴드별로 계산하고, 그 예산으로
+                # 다시 청크 분할한다 — 배지가 한 밴드에 몰려도 본문이 넘치지 않는다
+                bextra = 0
+                if bi == 0 and si == 0 and tables:
+                    bextra += sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
+                                  for tb in tables)
+                if bi == nb - 1 and si == last_si and notes:
+                    bextra += sum(text_lines(plain(nt), WIDE_EA) for nt in notes)
                 cap = f"{base_cap} ({bi + 1}/{nb})".strip() if base_cap else ""
-                plans.append({
-                    "kind": "screen", "sec": sec,
-                    "image": image, "img_path": bpath, "ph": None,
-                    "horizontal": False,
-                    "frame_h": min(BODY_W.inches / br, PORT_IMG_MAX_H.inches),
-                    "caption": cap,
-                    "items": dist[bi],
-                })
+                for chunk in _chunk_items(dist[bi], WIDE_EA, _band_budget(bframe_h, bextra)):
+                    plans.append({
+                        "kind": "screen", "sec": sec,
+                        "image": image, "img_path": bpath, "ph": None,
+                        "horizontal": False,
+                        "frame_h": bframe_h,
+                        "caption": cap,
+                        "items": chunk,
+                    })
             continue
 
-        chunks = [[]]
-        used = 0
-        for marker, text in items:
-            lines = text_lines(plain(text), width_ea)
-            if chunks[-1] and (len(chunks[-1]) >= MAX_ITEMS or used + lines > budget):
-                chunks.append([])
-                used = 0
-            chunks[-1].append((marker, text))
-            used += lines
-
-        # 균형 재배분: 그리디 분할(6+1 등)은 마지막 장에 항목 1~2개만 남는 고아
-        # 슬라이드를 만들므로, 청크 수는 유지한 채 항목을 균등(4+3 등)하게 다시 나눈다
-        if len(chunks) > 1:
-            k, n = len(chunks), len(items)
-            sizes = [n // k + (1 if i < n % k else 0) for i in range(k)]
-            balanced, pos = [], 0
-            for size in sizes:
-                balanced.append(items[pos:pos + size])
-                pos += size
-            if all(len(c) <= MAX_ITEMS and
-                   sum(text_lines(plain(t), width_ea) for _, t in c) <= budget * 1.2
-                   for c in balanced):
-                chunks = balanced
+        chunks = _chunk_items(items, width_ea, budget)
 
         for chunk in chunks:
             plans.append({

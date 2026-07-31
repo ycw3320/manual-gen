@@ -168,7 +168,17 @@ def render_blocks(doc_x, blocks, draft_dir, shots_dir, counters):
             if path:
                 size = image_size(path)
                 if size and size[0] and size[1] / size[0] > IMG_MAX_H_CM / IMG_W_CM:
-                    targets = tile_tall_image(path, shots_dir)
+                    targets, why = tile_tall_image(path, shots_dir)
+                    if len(targets) < 2 or why == "band-limit":
+                        # 조용히 실패하면 세로 긴 캡처가 폭 축소(썸네일)로 삽입된다
+                        hint = {"no-pillow": "Pillow 미설치 — `pip install Pillow` 후 재생성",
+                                "no-size": "이미지 치수 불명(PNG 로 재저장 권장)",
+                                "band-limit": "세로가 과도하게 길어 밴드 상한 초과 — 기능 경계로 "
+                                              "나눠 개별 캡처(논리 분할) 권장",
+                                "error": "이미지 처리 오류"}.get(why or "", "")
+                        if hint:
+                            print(f"[build_docx] 경고: 세로 긴 캡처 {os.path.basename(path)} "
+                                  f"분할 실패/한계 — {hint}", file=sys.stderr)
                 if not targets:
                     targets = [path]
             if not targets:

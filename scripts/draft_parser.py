@@ -124,31 +124,57 @@ def _safe_cut_rows(gray_w, h, px):
     """가로 방향 픽셀 변화가 작은(=배경 여백) 행의 '안전도'를 0~1로 돌려준다.
     표 행·카드 사이 여백은 균일 배경이라 값이 낮고, 텍스트·테두리 행은 높다."""
     scores = []
+    means = []
     for y in range(h):
         row = [px[x, y] for x in range(gray_w)]
+        means.append(sum(row) / len(row))
         scores.append((max(row) - min(row)) / 255.0)  # 행 내 명암 범위(0=완전 균일)
-    return scores
+    # 배경 기준 밝기 = 행 평균의 중앙값(페이지 대부분은 배경이므로). 전폭 단색 배너·
+    # 헤더 바는 '균일'하지만 배경색이 아니므로, 배경과의 밝기 차를 페널티로 더해
+    # 여백과 구분한다 — 균일함만 보면 배너 정중앙을 잘라 요소를 관통한다.
+    bg = sorted(means)[len(means) // 2] if means else 255.0
+    return [s + abs(m - bg) / 255.0 * 2.0 for s, m in zip(scores, means)]
+
+
+def _safe_runs(scores, lo, hi, thresh=0.06):
+    """[lo,hi) 구간에서 점수가 thresh 미만인 연속 행 구간(run) 목록 → [(start, end)]."""
+    runs, start = [], None
+    for y in range(lo, hi):
+        if scores[y] < thresh:
+            if start is None:
+                start = y
+        elif start is not None:
+            runs.append((start, y))
+            start = None
+    if start is not None:
+        runs.append((start, hi))
+    return runs
 
 
 def tile_tall_image(path, out_dir, max_bands=6):
     """세로로 긴 이미지를 표준 비율(≈1.48) 밴드 N장으로 자른다. 절단선은 등간격이
-    아니라 '배경 여백 행'에 스냅해 표 행·카드·차트가 잘리지 않게 한다(요소 인식).
+    아니라 '배경 여백 구간의 중앙'에 스냅해 표 행·카드·차트가 잘리지 않게 한다(요소 인식).
 
-    반환: 밴드 파일 경로 리스트(2장 이상) 또는 [] (Pillow 없음·치수 불명·불필요·실패).
-    폭은 원본 그대로라 각 밴드 비율이 표준에 가까워 빌더가 전폭으로 균일 렌더한다.
-    build_pptx / build_docx 공용 — 매뉴얼 전체 캡처의 렌더 폭 일관성을 위한 핵심."""
+    반환: (밴드 경로 리스트, 사유) — 경로가 2장 미만이면 분할이 일어나지 않은 것이고
+    사유가 그 원인을 알려준다: None(정상 분할) / "not-needed"(분할 불필요) /
+    "no-pillow"(Pillow 미설치) / "no-size"(치수 불명) / "error"(처리 실패) /
+    "band-limit"(상한 초과로 밴드가 표준보다 커짐 — 분할은 했으나 폭 균일 미달).
+    호출부는 사유를 경고로 노출해야 한다 — 조용히 실패하면 세로 긴 캡처가 폭 축소된
+    채 납품된다. build_pptx / build_docx 공용."""
     try:
         from PIL import Image
     except ImportError:
-        return []
+        return [], "no-pillow"
     size = image_size(path)
     if not size or size[0] == 0:
-        return []
+        return [], "no-size"
     w, h = size
     tile_h = max(1, round(w / STD_VP_RATIO))       # 표준 비율 밴드 높이(px)
     if h <= tile_h * 1.12:                          # 한 밴드 안에 들어오면 분할 불필요
-        return []
-    n = min(max_bands, max(2, math.ceil(h / tile_h)))
+        return [], "not-needed"
+    want_n = max(2, math.ceil(h / tile_h))
+    n = min(max_bands, want_n)
+    reason = "band-limit" if want_n > max_bands else None
     try:
         im = Image.open(path).convert("RGB")
         gw = 96                                     # 가로 축소해 행 스캔 비용 절감
@@ -156,9 +182,9 @@ def tile_tall_image(path, out_dir, max_bands=6):
         px = gray.load()
         safety = _safe_cut_rows(gw, h, px)
     except Exception:
-        return []
+        return [], "error"
 
-    # 목표 경계 y = k*h/n 를 ±tol 안의 '가장 배경다운 행'으로 스냅(요소 관통 회피)
+    # 목표 경계 y = k*h/n 를 ±tol 안의 '가장 배경다운 구간 중앙'으로 스냅(요소 관통 회피)
     tol = int(tile_h * 0.42)
     cuts = [0]
     for k in range(1, n):
@@ -167,9 +193,16 @@ def tile_tall_image(path, out_dir, max_bands=6):
         if lo >= hi:
             cuts.append(target)
             continue
-        best_y, best_s = target, 2.0
+        runs = _safe_runs(safety, lo, hi)
+        if runs:
+            # 여백 구간의 중앙을 자른다 — 요소 경계에 딱 붙는 것보다 안전하고,
+            # 목표에 가장 가까운 구간을 고른다
+            s, e = min(runs, key=lambda r: abs((r[0] + r[1]) // 2 - target))
+            cuts.append((s + e) // 2)
+            continue
+        best_y, best_s = target, 1e9
         for y in range(lo, hi):
-            # 목표에서 멀수록 소폭 페널티 — 동점이면 목표에 가까운 안전 행 선택
+            # 안전 구간이 없으면 최소 점수 행 — 목표에서 멀수록 소폭 페널티
             s = safety[y] + abs(y - target) / (tol * 40.0)
             if s < best_s:
                 best_s, best_y = s, y
@@ -189,8 +222,8 @@ def tile_tall_image(path, out_dir, max_bands=6):
             im.crop((0, top, w, bot)).save(bp)
             paths.append(bp)
     except Exception:
-        return []
-    return paths if len(paths) > 1 else []
+        return [], "error"
+    return (paths, reason) if len(paths) > 1 else ([], "error")
 
 
 # 라우트 구분자는 공백으로 감싼 대시(— – -)만 인정한다 — 화면명 안의 하이픈 단어와 구분

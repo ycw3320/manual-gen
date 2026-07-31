@@ -313,6 +313,27 @@ def _load_badge_positions(img_path):
     return {}
 
 
+TILE_FAIL_MSG = {
+    "no-pillow": "Pillow 미설치 — 세로 긴 캡처를 분할하지 못해 폭이 줄어든 채 렌더됩니다. "
+                 "`pip install Pillow` 후 재생성하세요",
+    "no-size": "이미지 치수를 읽지 못했습니다(지원되지 않는 포맷) — PNG 로 다시 저장하세요",
+    "error": "이미지 처리 중 오류 — 파일이 손상되었는지 확인하세요",
+    "not-needed": "",
+    "band-limit": "세로가 과도하게 길어 밴드 상한(6장)에 걸렸습니다 — 밴드가 표준보다 커져 "
+                  "폭이 줄어듭니다. 기능 경계로 나눠 개별 캡처(논리 분할)하세요",
+}
+
+
+def warn_tall_tile(img_path, why, sec):
+    """세로 긴 캡처의 타일 분할 실패·한계를 stderr 로 알린다 — 조용히 넘어가면
+    폭 균일 규격이 무음으로 깨진 산출물이 납품된다."""
+    msg = TILE_FAIL_MSG.get(why or "", "")
+    if not msg:
+        return
+    print(f"[build_pptx] 경고: '{sec['num']} {sec['title']}' 의 세로 긴 캡처 "
+          f"({os.path.basename(img_path)}) — {msg}", file=sys.stderr)
+
+
 def _chunk_items(items, width_ea, budget):
     """항목을 슬라이드당 상한(MAX_ITEMS)·줄 예산으로 나눈 청크 목록을 돌려준다.
 
@@ -444,7 +465,9 @@ def split_section(sec, draft_dir, shots_dir):
         # 첫 밴드에 싣고, 이후 밴드는 '(계속 k/N)' 이미지 전용 연속 컷으로 둔다.
         bands = []
         if PORTRAIT and img_path and TALL_RATIO_MIN and image_ratio(img_path) < TALL_RATIO_MIN:
-            bands = tile_tall_image(img_path, shots_dir)
+            bands, why = tile_tall_image(img_path, shots_dir)
+            if len(bands) < 2 or why == "band-limit":
+                warn_tall_tile(img_path, why, sec)
         if len(bands) > 1:
             nb = len(bands)
             base_cap = (image.get("caption") if image else "") or ""

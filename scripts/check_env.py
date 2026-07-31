@@ -80,7 +80,10 @@ def main():
     print(f"  - 캡처 CDP 경로(②): {'가능' if cdp_ok else '불가 — ' + ('playwright 설치 필요(pip install playwright)' if not mods['playwright'] else 'Chromium 계열 브라우저 필요')}")
     print(f"  - pptx 번들 빌더: {'가능' if mods['python-pptx'] else '불가 — pip install python-pptx'}")
     print(f"  - docx 번들 빌더: {'가능' if mods['python-docx'] else '불가 — pip install python-docx'}")
-    print(f"  - 배지·리사이즈(Pillow): {'가능' if mods['Pillow'] else '불가 — pip install Pillow'}")
+    # Pillow 는 배지 합성뿐 아니라 '세로 긴 캡처 타일 분할'(폭 균일 규격)에도 필수다 —
+    # 없으면 긴 캡처가 폭 축소로 작게 들어간다
+    print(f"  - 배지·리사이즈·세로 긴 캡처 분할(Pillow): "
+          f"{'가능' if mods['Pillow'] else '불가 — pip install Pillow (없으면 긴 캡처가 축소 렌더)'}")
     print(f"  - 최후 폴백(pandoc 변환 안내): {'가능' if pandoc else '해당 없음'}")
 
     # config.md 에 붙여 넣을 한 줄 스냅샷

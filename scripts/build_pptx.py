@@ -77,11 +77,16 @@ def _rgb(hex6):
 
 
 def apply_theme(name):
-    """표지·간지·헤더의 배경/포인트 팔레트를 모듈 전역에 적용한다."""
-    global THEME, DARK, ACCENT, DARK_SOFT, DARK_SOFTER, HEAD_NUM
+    """표지·간지·헤더의 배경/포인트 팔레트를 모듈 전역에 적용한다.
+
+    ACCENT 는 흰 배경 위(본문 '접근 경로'·CONTENTS 바), ACCENT_ON_DARK 는 어두운
+    배경 위(표지 바·간지 장 번호) 용도다 — 기본 3종은 두 값이 같고, 템플릿 추출
+    경로에서만 갈린다(밝은 accent 는 흰 배경에서 안 읽히므로 본문용만 어둡게)."""
+    global THEME, DARK, ACCENT, ACCENT_ON_DARK, DARK_SOFT, DARK_SOFTER, HEAD_NUM
     t = THEMES[name]
     THEME = name
     DARK, ACCENT = _rgb(t["dark"]), _rgb(t["accent"])
+    ACCENT_ON_DARK = ACCENT
     DARK_SOFT, DARK_SOFTER, HEAD_NUM = _rgb(t["soft"]), _rgb(t["softer"]), _rgb(t["head_num"])
 
 
@@ -95,6 +100,27 @@ def _hex_hls(hex6):
     import colorsys
     return colorsys.rgb_to_hls(int(hex6[0:2], 16) / 255, int(hex6[2:4], 16) / 255,
                                int(hex6[4:6], 16) / 255)
+
+
+def _contrast_on_white(hex6):
+    """흰 배경 대비 명도비(WCAG). 4.5 이상이면 본문 텍스트로 읽을 만하다."""
+    def lin(c):
+        c = int(c, 16) / 255
+        return c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4
+    lum = 0.2126 * lin(hex6[0:2]) + 0.7152 * lin(hex6[2:4]) + 0.0722 * lin(hex6[4:6])
+    return 1.05 / (lum + 0.05)
+
+
+def _darken_for_white_bg(hex6, target=4.5):
+    """흰 배경 위 본문 색으로 쓸 수 있게 명도를 낮춘다 — 노랑처럼 색상 자체가 밝은
+    계열은 고정 명도로는 대비가 안 나오므로 목표 명도비에 도달할 때까지 단계적으로
+    어둡게 한다(색상·채도는 유지해 템플릿 색감을 잃지 않는다)."""
+    h, l, s = _hex_hls(hex6)
+    out = hex6
+    while l > 0.12 and _contrast_on_white(out) < target:
+        l -= 0.04
+        out = _hls_hex(h, l, max(s, 0.35))
+    return out
 
 
 def theme_from_template(path):
@@ -123,6 +149,12 @@ def theme_from_template(path):
     dark, accent = pick("dk2"), pick("accent1")
     if not dark or not accent:
         return None
+    # 무채색(회색조) 템플릿: hue 가 0 으로 떨어져 원본에 없는 색조(붉은빛)를 발명하게 되므로
+    # 파생을 포기하고 기본 테마를 유지한다
+    _, _, ds0 = _hex_hls(dark)
+    _, _, as0 = _hex_hls(accent)
+    if ds0 < 0.08 and as0 < 0.08:
+        return None
     # dark 는 표지·간지의 배경 — 밝은 값이 오면(라이트 테마 템플릿) accent 를 어둡게 내려 사용
     dh, dl, ds = _hex_hls(dark)
     if dl > 0.5:
@@ -130,14 +162,18 @@ def theme_from_template(path):
         dark = _hls_hex(ah, 0.18, max(0.30, as_ * 0.8))
         dh, dl, ds = _hex_hls(dark)
     ah, al, as_ = _hex_hls(accent)
+    # ACCENT 는 흰 배경 위 본문 색으로도 쓰인다('접근 경로'·CONTENTS 액센트 바) —
+    # 밝은 accent(노랑·라이트그린 등)를 그대로 쓰면 대비가 1.4:1 수준이라 읽히지 않는다.
+    # 본문용만 대비 기준까지 어둡게 하고, 표지·간지의 원색은 ACCENT_ON_DARK 로 보존한다.
+    accent_text = _darken_for_white_bg(accent)
     # 보조 팔레트 파생 — 기본 3종 테마의 명도·채도 관계를 따른다
-    global THEME, DARK, ACCENT, DARK_SOFT, DARK_SOFTER, HEAD_NUM
+    global THEME, DARK, ACCENT, ACCENT_ON_DARK, DARK_SOFT, DARK_SOFTER, HEAD_NUM
     THEME = "template"
-    DARK, ACCENT = _rgb(dark), _rgb(accent)
+    DARK, ACCENT, ACCENT_ON_DARK = _rgb(dark), _rgb(accent_text), _rgb(accent)
     DARK_SOFT = _rgb(_hls_hex(dh, 0.80, min(0.45, max(0.12, ds))))
     DARK_SOFTER = _rgb(_hls_hex(dh, 0.68, min(0.30, max(0.10, ds * 0.7))))
     HEAD_NUM = _rgb(_hls_hex(ah, 0.70, min(0.75, max(0.25, as_))))
-    return dark, accent
+    return dark, accent_text
 
 
 apply_theme("navy")
@@ -715,7 +751,7 @@ def render_cover(prs, doc, args):
         tf = add_text(slide, Inches(0.8), vh(0.493), cover_w, Inches(0.6))
         add_para(tf, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
                  16, color=DARK_SOFT, align=PP_ALIGN.CENTER)
-    add_rect(slide, 0, vh(0.653), SLIDE_W, Pt(3), ACCENT)
+    add_rect(slide, 0, vh(0.653), SLIDE_W, Pt(3), ACCENT_ON_DARK)  # 어두운 표지 위 — 원색 유지
     meta_line = " · ".join(v for v in (audience, f"버전 {version}" if version else "", date) if v)
     tf = add_text(slide, Inches(0.8), vh(0.707), cover_w, Inches(0.5))
     add_para(tf, meta_line, 12, color=DARK_SOFTER, align=PP_ALIGN.CENTER)
@@ -754,7 +790,7 @@ def render_divider(prs, ch):
     add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, DARK)
     vh = lambda frac: Inches(SLIDE_H.inches * frac)
     tf = add_text(slide, Inches(1.0), vh(0.36), SLIDE_W - Inches(2.0), Inches(1.4))
-    add_para(tf, f"{ch['num']}.", 52, color=ACCENT, bold=True)
+    add_para(tf, f"{ch['num']}.", 52, color=ACCENT_ON_DARK, bold=True)  # 어두운 간지 위
     tf = add_text(slide, Inches(1.0), vh(0.533), SLIDE_W - Inches(2.0), Inches(1.0))
     add_para(tf, ch["title"], 30, color=WHITE, bold=True)
 

@@ -1,19 +1,19 @@
 ---
 name: manual-gen
-description: Generate an end-user manual (Word .docx or PowerPoint .pptx) by analyzing a web system's source code and live screens. Auto-detects the tech stack (Spring/JSP, eGovFrame, React, Vue, server-side templates), extracts the screen list from routing and menu structures, and when a running system is available, walks through menus in a browser capturing real screenshots with numbered badge annotations to document per-screen usage (access path, field descriptions, step-by-step procedures). Works with source only or URL only. Use this skill whenever the user asks — in any language, including Korean — to create a user manual, user guide, screen guide, operation guide, admin manual, or usage documentation for a web application or admin system, even if they only say they need a document explaining how to use their system's screens or menus, with or without screenshots.
+description: Generate an end-user manual (PowerPoint .pptx, optionally converted to PDF) by analyzing a web system's source code and live screens. Auto-detects the tech stack (Spring/JSP, eGovFrame, React, Vue, server-side templates), extracts the screen list from routing and menu structures, and when a running system is available, walks through menus in a browser capturing real screenshots with numbered badge annotations to document per-screen usage (access path, field descriptions, step-by-step procedures). Works with source only or URL only. Use this skill whenever the user asks — in any language, including Korean — to create a user manual, user guide, screen guide, operation guide, admin manual, or usage documentation for a web application or admin system, even if they only say they need a document explaining how to use their system's screens or menus, with or without screenshots.
 metadata:
-  description-ko: 웹 시스템의 소스코드와 실행 화면을 분석해 사용자 매뉴얼을 Word(.docx) 또는 PowerPoint(.pptx)로 생성한다. 기술 스택(Spring/JSP, eGovFrame, React, Vue, 서버사이드 템플릿 등)을 자동 감지해 라우팅과 메뉴 구조에서 화면 목록을 추출하고, 실행 중인 시스템이 있으면 브라우저로 메뉴를 순회하며 실제 스크린샷을 캡처하고 번호 배지를 합성해 화면별 사용법(접근 경로, 항목 설명, 조작 절차)을 문서화한다. 소스만 있어도, URL만 있어도 동작한다. 트리거 예 - 사용자 매뉴얼, 사용 설명서, 사용자 가이드, 화면 설명서, 운영자 매뉴얼, 관리자 매뉴얼, 매뉴얼 작성, 시스템 사용법 문서, 화면 캡처해서 문서로 정리.
+  description-ko: 웹 시스템의 소스코드와 실행 화면을 분석해 사용자 매뉴얼을 PowerPoint(.pptx) 및 PDF 로 생성한다. 기술 스택(Spring/JSP, eGovFrame, React, Vue, 서버사이드 템플릿 등)을 자동 감지해 라우팅과 메뉴 구조에서 화면 목록을 추출하고, 실행 중인 시스템이 있으면 브라우저로 메뉴를 순회하며 실제 스크린샷을 캡처하고 번호 배지를 합성해 화면별 사용법(접근 경로, 항목 설명, 조작 절차)을 문서화한다. 소스만 있어도, URL만 있어도 동작한다. 트리거 예 - 사용자 매뉴얼, 사용 설명서, 사용자 가이드, 화면 설명서, 운영자 매뉴얼, 관리자 매뉴얼, 매뉴얼 작성, 시스템 사용법 문서, 화면 캡처해서 문서로 정리.
 ---
 
 # 웹시스템 사용자 매뉴얼 생성
 
 웹 시스템을 분석해 최종 사용자용 매뉴얼을 생성하는 워크플로. 최종 산출물
-`사용자매뉴얼_<시스템명>_<YYYYMMDD>.docx|pptx`는 **대상 프로젝트 루트**(사용자 지정 시
+`사용자매뉴얼_<시스템명>_<YYYYMMDD>.pptx|pdf`는 **대상 프로젝트 루트**(사용자 지정 시
 그 경로)에 저장한다 — `manual-work/`는 .gitignore 권장 대상이라 최종본을 그 안에 두면
 납품물이 유실될 수 있기 때문이다. 중간 산출물만 `manual-work/` 아래에서 관리한다.
 
 **슬래시 인자**: `/manual-gen [URL 또는 소스 경로] [자유 키워드...]`
-— 인자로 받은 값(URL, 경로, "관리자"/"사용자", "docx"/"pptx" 등)은 해당 인터뷰 항목을
+— 인자로 받은 값(URL, 경로, "관리자"/"사용자", "pptx"/"pdf" 등)은 해당 인터뷰 항목을
 대체한다. 인자에 `auto`(또는 "자동", "질문 없이")가 있으면 아래 무정차 모드로 동작한다.
 
 ## 0. 동작 모드
@@ -68,9 +68,10 @@ metadata:
      명시한다 — 조용히 제외하면 그 영역 매뉴얼이 없다는 사실 자체가 잊히기 때문이다.
 8. **운영 데이터 여부**: URL이 localhost/127.0.0.1/사설 IP + 개발 포트면 테스트 환경으로
    추정(개인정보 확인 생략 가능). 그 외 도메인은 운영 가능성이 있으므로 확인 대상.
-9. **출력 형식·방향·테마**: config.md 이력 → 없으면 pptx 기본(docx 는 확인
-   단계에서 선택). **pptx 라면 슬라이드 방향(세로 A4 기본 / 가로 16:9, 빌더
-   `--orientation`)과 색 테마도 함께 결정한다**. 테마 선택지는 **기본 3종 + 기타 1개**
+9. **출력 형식·방향·테마**: **지원 형식은 pptx 와 PDF 뿐이다(docx 미지원)**.
+   config.md 이력 → 없으면 pptx 기본이며, PDF 는 완성된 pptx 를 변환해 만든다
+   (둘 다 필요한지 확인 단계에서 묻는다). **슬라이드 방향(세로 A4 기본 / 가로 16:9,
+   빌더 `--orientation`)과 색 테마도 함께 결정한다**. 테마 선택지는 **기본 3종 + 기타 1개**
    가 전부다(특정 조직 서식을 별도 표준 선택지로 두지 않는다):
    - `--theme`: navy 네이비+블루(기본) / forest 딥그린+틸 / charcoal 차콜+오렌지
    - **기타: "참고 템플릿 pptx 지정(파일 경로+파일명 입력)"** — 기본 동작은
@@ -254,30 +255,39 @@ C 모드에서는 이 단계를 건너뛰고 4단계의 메뉴 실측으로 인�
   기본 모드에서는 **목차 수준의 검토를 받은 뒤** 문서 생성으로 넘어가고, auto 모드에서는
   검토 없이 진행하되 최종 보고에 목차 전체를 실어 사후 검수를 대신한다.
 
-## 6. 문서 생성 (docx / pptx)
+## 6. 문서 생성 (pptx / PDF)
 
 이 단계를 시작할 때 `references/output-formats.md`를 읽는다 (형식별 변환 명세).
+
+**지원 형식은 pptx 와 PDF 두 가지다(docx 는 지원하지 않는다).** PDF 는 별도로
+조판하지 않고 **완성된 pptx 를 변환**해 만든다 — 레이아웃·규격이 pptx 빌더에
+내장되어 있으므로 검증도 pptx 단계에서 끝난다.
 
 1. 사전 처리: `python scripts/resize_images.py manual-work/screenshots --max-width 1400`
    — 과대 이미지는 문서 용량과 생성 시간을 키우기 때문이다. (Pillow 미설치 환경이면 건너뛴다.)
 2. 생성 경로 — **번들 빌더가 기본**이다 (환경마다 다른 skill 생태계가 산출 구조를
    좌우하지 못하게, 결정론적 생성기를 표준 경로로 둔다):
-   - **① 번들 빌더(기본)**: `scripts/build_pptx.py` / `scripts/build_docx.py` 실행 —
+   - **① 번들 빌더(기본)**: `scripts/build_pptx.py` 실행 —
      output-formats.md 규격(표지·CONTENTS·고정 프레임·이미지 테두리·6개 초과 분할·마크다운
      서식 변환·placeholder 규격)이 내장되어 있고, **원고 사전 검증(validate_draft)**과
      자체 검증까지 수행하므로 CLI/데스크톱 어디서든 동일 구조가 나온다.
      생성기를 즉석에서 자작하지 않는다.
    - **② 전용 skill(특수 경로)**: 사용자가 **참고 템플릿 pptx를 제공해 서식 복제**
-     (unpack → 슬라이드 복제 → 내용 교체)가 필요한 경우에만 docx/pptx skill
-     (`anthropic-skills:docx`/`pptx`)을 호출한다 — 번들 빌더가 못 하는 유일한 작업이기
-     때문이다. 이때도 output-formats.md의 규격을 요구사항으로 전달한다.
+     (unpack → 슬라이드 복제 → 내용 교체)를 **명시 요구**한 경우에만 pptx skill
+     (`anthropic-skills:pptx`)을 호출한다 — 번들 빌더가 못 하는 유일한 작업이기
+     때문이다(기본은 1-1의 9에 따라 `--theme-from` 색 추출). 이때도 output-formats.md의
+     규격을 요구사항으로 전달한다.
      **② 경로(전용 skill·자작 템플릿 빌더 포함) 산출물은 반드시
      `python scripts/verify_pptx.py <pptx> --draft <원고>` 를 통과해야 한다** —
      번들 빌더의 내장 규격(테두리·비율 유지·폭 균일·캡션·분할)이 이 경로에서는
      자동 적용되지 않으므로, 산출물 파일 기반 기계 검증으로 우회를 차단한다.
      ERROR 는 수정 후 재생성이 원칙이다(실제로 자작 템플릿 빌더가 테두리 19건
      누락을 무경고 산출한 사례가 있다).
-   - **③ 최후 폴백**: ①의 의존성(python-pptx/python-docx)을 설치할 수 없으면
+   - **③ PDF 산출**: 사용자가 PDF 를 요청했으면 pptx 를 먼저 완성·검증한 뒤
+     `powershell -ExecutionPolicy Bypass -File scripts/export_pdf.ps1 -Path <문서.pptx>`
+     로 변환한다(PowerPoint COM → 없으면 LibreOffice 폴백). pptx 도 함께 납품할지는
+     사용자에게 확인한다.
+   - **④ 최후 폴백**: ①의 의존성(python-pptx)을 설치할 수 없으면
      manual-draft.md를 최종 산출물로 확정하고 변환 방법(pandoc 등)을 안내한다.
 3. 빌더가 원고 검증 ERROR로 중단되면 원고를 규약에 맞게 수정하는 것이 원칙이다 —
    `--skip-validate` 우회는 사용자가 지시한 경우에만 쓴다.

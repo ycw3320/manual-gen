@@ -1,4 +1,4 @@
-"""manual-draft.md 공용 파서 — build_pptx.py / build_docx.py 가 사용한다.
+"""manual-draft.md 공용 파서 — build_pptx.py 가 사용한다.
 
 지원하는 원고 문법 (manual-template.md 규약의 마크다운 서브셋):
   # 제목 / > 메타 블록쿼트(제목 직후) / ## NN. 장 / ### x.y[.z] 절
@@ -160,7 +160,7 @@ def tile_tall_image(path, out_dir, max_bands=6):
     "no-pillow"(Pillow 미설치) / "no-size"(치수 불명) / "error"(처리 실패) /
     "band-limit"(상한 초과로 밴드가 표준보다 커짐 — 분할은 했으나 폭 균일 미달).
     호출부는 사유를 경고로 노출해야 한다 — 조용히 실패하면 세로 긴 캡처가 폭 축소된
-    채 납품된다. build_pptx / build_docx 공용."""
+    채 납품된다."""
     try:
         from PIL import Image
     except ImportError:

@@ -1,7 +1,7 @@
 # 매뉴얼 표준 목차·화면 문서화 포맷
 
 국내 SI 관리자/사용자 매뉴얼 관행(화면 캡처 중심, 번호 배지 + 번호별 설명)을 따르는
-표준 형식. manual-draft.md는 이 구조로 작성하고, docx/pptx 변환은 output-formats.md를 따른다.
+표준 형식. manual-draft.md는 이 구조로 작성하고, pptx/PDF 변환은 output-formats.md를 따른다.
 
 ## 1. 표준 목차
 

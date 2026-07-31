@@ -55,7 +55,6 @@ def main():
     mods = {
         "playwright": has_module("playwright"),
         "python-pptx": has_module("pptx"),
-        "python-docx": has_module("docx"),
         "Pillow": has_module("PIL"),
     }
     browsers = {name: find_browser(paths) for name, paths in BROWSERS.items()}
@@ -79,7 +78,7 @@ def main():
     cdp_ok = mods["playwright"] and any(browsers.values())
     print(f"  - 캡처 CDP 경로(②): {'가능' if cdp_ok else '불가 — ' + ('playwright 설치 필요(pip install playwright)' if not mods['playwright'] else 'Chromium 계열 브라우저 필요')}")
     print(f"  - pptx 번들 빌더: {'가능' if mods['python-pptx'] else '불가 — pip install python-pptx'}")
-    print(f"  - docx 번들 빌더: {'가능' if mods['python-docx'] else '불가 — pip install python-docx'}")
+    print(f"  - PDF 변환(export_pdf.ps1): PowerPoint 또는 LibreOffice 필요 — 설치 여부는 실행 시 확인")
     # Pillow 는 배지 합성뿐 아니라 '세로 긴 캡처 타일 분할'(폭 균일 규격)에도 필수다 —
     # 없으면 긴 캡처가 폭 축소로 작게 들어간다
     print(f"  - 배지·리사이즈·세로 긴 캡처 분할(Pillow): "

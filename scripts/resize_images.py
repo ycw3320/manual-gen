@@ -1,6 +1,6 @@
 """디렉토리 내 이미지 중 폭이 기준을 넘는 것만 비율 축소한다 (제자리 덮어쓰기).
 
-문서(docx/pptx) 삽입 전 용량·생성 시간을 줄이기 위한 전처리.
+문서(pptx) 삽입 전 용량·생성 시간을 줄이기 위한 전처리.
 
 사용 예:
   python resize_images.py manual-work/screenshots --max-width 1400

@@ -2,7 +2,7 @@
 
 원고는 실행 세션이 작성하므로 규약 이탈이 조용히 섞일 수 있다. 빌더(결정론적)에
 잘못된 입력이 들어가면 잘못된 구조가 그대로 산출되므로, 생성 전에 게이트로 막는다.
-build_pptx.py / build_docx.py 가 시작 시 자동 호출한다 (--skip-validate 로 우회 가능).
+build_pptx.py 가 시작 시 자동 호출한다 (--skip-validate 로 우회 가능).
 
 심각도:
   ERROR — 산출물 구조를 깨뜨리는 위반 (빌드 중단): 장 없음, 사진 번호 중복,
@@ -75,6 +75,8 @@ def _block_texts(b):
     if b["type"] in ("para", "note"):
         return [b.get("text", "")]
     return []
+
+
 # 최종 독자용 문서에 남으면 안 되는 개발 용어 — 문체 린트 (manual-template.md 3절)
 # \b 는 한글을 단어 문자로 취급해 "API를"을 놓치므로 ASCII 경계로 검사한다
 TECH_TERMS_RE = re.compile(

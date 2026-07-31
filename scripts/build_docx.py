@@ -204,6 +204,46 @@ def render_blocks(doc_x, blocks, draft_dir, shots_dir, counters):
             add_runs(cap, f"[사진 -] {b['name']} (추후 삽입)", size=9, color=MUTED)
 
 
+def self_check(doc_x, shots_dir):
+    """산출 docx 자체 검증 — pptx 의 self_check 에 대응한다(그동안 docx 경로에는
+    어떤 게이트도 없어 폭 축소·테두리 누락·마크다운 잔재가 무경고로 납품됐다)."""
+    problems = []
+    widths = []
+    no_border = 0
+    for shp in doc_x.inline_shapes:
+        widths.append(shp.width)
+        pic = shp._inline.graphic.graphicData.pic
+        if pic.spPr.find(qn("a:ln")) is None:
+            no_border += 1
+    if no_border:
+        problems.append(f"스크린샷 검은 테두리 누락 {no_border}건 — 규격은 전 캡처 검은 실선")
+    if widths:
+        lo, hi = min(widths), max(widths)
+        if hi and (hi - lo) / hi > 0.03:
+            problems.append(f"스크린샷 폭 편차 {round((hi - lo) / hi * 100)}% "
+                            f"({round(lo / 360000, 1)}~{round(hi / 360000, 1)}cm) — 균일 폭 규격 위반")
+        if lo < IMG_W_CM * 360000 * 0.90:
+            problems.append(f"스크린샷 폭 {round(lo / 360000, 1)}cm < 규격({IMG_W_CM}cm)의 90% "
+                            "— 세로 긴 캡처가 축소 삽입된 상태(타일 분할 실패 확인)")
+    for p in doc_x.paragraphs:
+        t = p.text
+        if "**" in t or "![" in t:
+            problems.append(f"마크다운 잔재 의심 — {t[:40]}")
+        if "이미지 파일 누락" in t:
+            problems.append(f"작업 메모 본문 유출 — {t[:40]} (placeholder 규약으로 표기할 것)")
+    # 배지 파이프라인 미사용 감지 (pptx 와 동일 기준)
+    if shots_dir and os.path.isdir(shots_dir):
+        try:
+            files = os.listdir(shots_dir)
+        except OSError:
+            files = []
+        originals = [f for f in files if f.lower().endswith(".png") and "_annotated" not in f]
+        if originals and not [f for f in files if "_annotated" in f]:
+            problems.append("screenshots 에 _annotated 파일이 0건 — 배지·강조 테두리 "
+                            "파이프라인이 사용되지 않았습니다")
+    return problems
+
+
 def main():
     ap = argparse.ArgumentParser(description="manual-draft.md → 매뉴얼 DOCX")
     ap.add_argument("--draft", required=True)
@@ -328,6 +368,9 @@ def main():
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
     doc_x.save(args.out)
     print(f"[build_docx] 저장 완료: {args.out}")
+
+    for pr in self_check(doc_x, shots_dir):
+        print(f"[build_docx] 자체 검증 경고: {pr}", file=sys.stderr)
 
 
 if __name__ == "__main__":

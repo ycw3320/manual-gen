@@ -36,6 +36,22 @@ PHOTO_NO_RE = re.compile(r"\[사진\s*(\d+)\]")
 LABEL_RE = re.compile(r"\[([^\[\]\n]+)\]")
 
 
+def _badge_count(img_path):
+    """이미지에 대응하는 markers.json 의 배지 개수(found=true). 없으면 None."""
+    import json
+    stem = os.path.splitext(img_path)[0]
+    if stem.endswith("_annotated"):
+        stem = stem[:-len("_annotated")]
+    mp = stem + ".markers.json"
+    if not os.path.exists(mp):
+        return None
+    try:
+        with open(mp, encoding="utf-8") as f:
+            return sum(1 for m in json.load(f).get("markers", []) if m.get("found"))
+    except (OSError, ValueError, TypeError):
+        return None
+
+
 def _block_texts(b):
     """텍스트 검사 대상 블록의 문자열 목록 (para/note/bullets/numbered)."""
     if b["type"] == "bullets":
@@ -91,6 +107,18 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
             # 반대 방향: 접근 경로가 있는데 시각 자료가 전혀 없는 절
             if has_access and not images and not phs:
                 warns.append(f"[{label}] 접근 경로는 있으나 스크린샷/placeholder 가 없습니다")
+
+            # 배지(markers.json) 개수와 원고의 **번호 목록** 항목 수 대조 — 배지와 1:1 대응
+            # 하는 것은 번호 목록(①②③·1.2.3.)이며, 불릿은 배지 없는 보충 설명이라 세지 않는다.
+            # 불일치는 캡처를 다시 합성했거나 원고 항목이 바뀐 신호다.
+            n_numbered = sum(len(b["items"]) for b in blocks if b["type"] == "numbered")
+            for img in images:
+                path = resolve_image(img["src"], draft_dir, shots_dir)
+                n_badges = _badge_count(path) if path else None
+                if n_badges and n_numbered and len(images) == 1 and n_badges != n_numbered:
+                    warns.append(f"[{label}] 배지 {n_badges}개 vs 번호 설명 {n_numbered}개 불일치 "
+                                 "— 캡처를 다시 합성했거나 원고 항목이 바뀐 상태입니다"
+                                 "(배지와 번호 설명은 1:1 대응이어야 합니다)")
 
             for img in images:
                 path = resolve_image(img["src"], draft_dir, shots_dir)

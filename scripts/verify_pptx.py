@@ -9,7 +9,8 @@ skill/자작 빌더) 경로는 규격(output-formats.md)을 우회해도 잡는 
 검사 항목:
   ERROR — 마크다운 잔재(**, ![), 스크린샷 검은 테두리 누락, 이미지 비율 왜곡(>3%),
           (--draft) 원고 이미지 소실
-  WARN  — 세로형 렌더 폭 편차(>3%), 슬라이드당 항목 6개 초과, 그림 있는 슬라이드의
+  WARN  — 세로형 렌더 폭 편차(>3%), 슬라이드당 항목 6개 초과, 설명이 지나치게 적은
+          컷(본문 170자 미만), 텍스트 프레임의 슬라이드 이탈, 그림 있는 슬라이드의
           [사진 N] 캡션 부재, 미확정 마킹 잔존, (--draft) placeholder 잔존 불일치
 
 사용 예:
@@ -99,17 +100,23 @@ def walk_shapes(shapes, scale=1.0):
         yield sh, scale
 
 
+SPARSE_CHARS = 170     # 이보다 짧은 화면 컷은 '설명이 너무 적다'로 본다
+
+
 def verify(path, draft=None, shots_dir=None):
     prs = Presentation(path)
     W, H = prs.slide_width, prs.slide_height
     portrait = H > W
     errors, warns = [], []
+    sparse_slides, overflow_slides = [], []
+    slide_h = prs.slide_height
 
     pic_widths = []
     n_pics = 0
     bordered = 0
     for idx, slide in enumerate(prs.slides, start=1):
         item_count = 0
+        body_chars = 0
         sec_titles = 0            # 한 장에 절 소제목이 여럿 = 개요 병합 장표
         slide_has_pic = False
         slide_has_caption = False
@@ -146,14 +153,35 @@ def verify(path, draft=None, shots_dir=None):
                     sec_titles += 1
                 if first == "•" or (first and first in CIRCLED) or re.match(r"^(?!0)\d{1,2}\.\s", stripped):
                     item_count += 1
+                if not SEC_NO_RE.match(stripped) and not stripped.startswith("[사진"):
+                    body_chars += len(stripped)
         # 개요 병합 장표(절 소제목 2개 이상)는 여러 절의 짧은 항목이 합산되므로 상한을 완화
         limit = MAX_ITEMS * max(1, sec_titles) if sec_titles >= 2 else MAX_ITEMS
         if item_count > limit:
             warns.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {limit} 초과)")
         if slide_has_pic and not slide_has_caption:
             warns.append(f"슬라이드 {idx}: 그림은 있는데 [사진 N] 캡션이 없습니다")
+        # 설명이 지나치게 적은 컷 — 분할이 과하면 쪽마다 한두 줄만 남고 아래가 빈다.
+        # 화면 슬라이드(그림 있음)만 대상으로 하고, 절의 마지막 컷은 ※만 실릴 수 있어 제외.
+        if slide_has_pic and item_count and body_chars < SPARSE_CHARS:
+            sparse_slides.append((idx, item_count, body_chars))
+        for sh in slide.shapes:
+            if getattr(sh, "has_text_frame", False) and sh.top is not None and sh.height is not None:
+                if sh.top + sh.height > slide_h:
+                    overflow_slides.append(idx)
+                    break
 
     # 세로형 렌더 폭 균일(폭 = 일관성 앵커)
+    if sparse_slides:
+        head = ", ".join(f"{i}({c}자)" for i, _, c in sparse_slides[:6])
+        warns.append(f"설명이 지나치게 적은 컷 {len(sparse_slides)}개 — {head}"
+                     + (" 외" if len(sparse_slides) > 6 else "")
+                     + " · ※를 줄이거나 동작 설명을 불릿으로 옮기면 앞 컷으로 합쳐진다"
+                       "(references/manual-template.md '2-1 분량 설계')")
+    if overflow_slides:
+        errors.append(f"텍스트 프레임이 슬라이드를 벗어난 컷 {len(overflow_slides)}개: "
+                      f"{sorted(set(overflow_slides))[:8]}")
+
     if portrait and pic_widths:
         lo, hi = min(pic_widths), max(pic_widths)
         if hi and (hi - lo) / hi > 0.03:

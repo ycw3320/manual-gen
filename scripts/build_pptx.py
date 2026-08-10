@@ -430,6 +430,25 @@ def intro_img_y(paras, access):
     return max(IMG_Y.inches, y)
 
 
+def _merge_small_chunks(chunks, width_ea, budget, last_extra=0):
+    """분할 결과에서 인접 컷을 합칠 수 있으면 합친다 — 항목 2~3개짜리 성긴 컷 방지.
+    마지막 컷은 ※주의가 함께 렌더되므로 그 몫을 뺀 예산으로 판정한다."""
+    if len(chunks) < 2:
+        return chunks
+    out = [chunks[0]]
+    for idx in range(1, len(chunks)):
+        ch = chunks[idx]
+        is_last = idx == len(chunks) - 1
+        cap = max(2, budget - (last_extra if is_last else 0))
+        merged = out[-1] + ch
+        lines = sum(text_lines(plain(t), width_ea) for _, t in merged)
+        if len(merged) <= MAX_ITEMS and lines <= cap:
+            out[-1] = merged
+        else:
+            out.append(ch)
+    return out
+
+
 def _band_budget(frame_h_in, extra_lines=0, img_y_in=None):
     """밴드(또는 상/하 배치) 컷에서 이미지 아래에 남는 설명 줄 예산."""
     top = IMG_Y.inches if img_y_in is None else img_y_in
@@ -509,18 +528,20 @@ def split_section(sec, draft_dir, shots_dir):
         # 표는 첫 컷, ※주의는 마지막 컷에 렌더되므로 그 컷의 필요 줄·예산에 반영한다
         wea = SIDE_EA if (visual is not None and not PORTRAIT
                           and not (bool(img_path) and image_ratio(img_path) >= 1.45)) else WIDE_EA
-        extra = 0
+        # 표는 첫 컷, ※주의는 마지막 컷에만 렌더된다 — 예산도 그 컷에서만 빼야 한다.
+        # 모든 컷에서 빼면 앞 컷이 불필요하게 잘게 쪼개진다(밴드 경로와 동일 규칙).
+        first_extra = last_extra = 0
         if si == 0 and tables:
-            extra += sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
-                         for tb in tables)
+            first_extra = sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
+                              for tb in tables)
         if si == last_si and notes:
-            extra += sum(text_lines(plain(nt), wea) for nt in notes)
+            last_extra = sum(text_lines(plain(nt), wea) for nt in notes)
+        extra = first_extra + last_extra
         need = sum(text_lines(plain(t), wea) for _, t in items) + extra
         # 개요·접근 경로는 첫 컷에만 실리고 그만큼 이미지가 아래로 밀린다 — 예산도
         # 그 실제 시작 위치에서 계산해야 본문이 슬라이드 밖으로 나가지 않는다
         seg_img_y = intro_img_y(paras, access) if si == 0 else IMG_Y.inches
         width_ea, budget, frame_h = _seg_layout(visual, img_path, need, seg_img_y)
-        budget = max(2, budget - extra)
 
         # 세로 긴 이미지: 폭을 줄이는 대신 표준 비율 밴드로 타일 분할한다(요소 경계
         # 스냅). 폭이 균일성 앵커이므로 모든 밴드가 전폭 6.4in로 렌더된다. 설명은
@@ -591,6 +612,7 @@ def split_section(sec, draft_dir, shots_dir):
                     if sum(text_lines(plain(t), WIDE_EA) for _, t in tail) + last_extra > budget_n:
                         bchunks = bchunks[:-1] + _chunk_items(tail, WIDE_EA,
                                                               max(2, budget_n - last_extra))
+                bchunks = _merge_small_chunks(bchunks, WIDE_EA, budget_n, last_extra)
                 cap = f"{base_cap} ({bi + 1}/{nb})".strip() if base_cap else ""
                 for chunk in bchunks:
                     plans.append({
@@ -603,7 +625,17 @@ def split_section(sec, draft_dir, shots_dir):
                     })
             continue
 
-        chunks = _chunk_items(items, width_ea, budget)
+        if first_extra and items:
+            head = _chunk_items(items, width_ea, max(2, budget - first_extra))[0]
+            rest = items[len(head):]
+            chunks = [head] + (_chunk_items(rest, width_ea, budget) if rest else [])
+        else:
+            chunks = _chunk_items(items, width_ea, budget)
+        if last_extra and chunks:
+            tail = chunks[-1]
+            if sum(text_lines(plain(t), width_ea) for _, t in tail) + last_extra > budget:
+                chunks = chunks[:-1] + _chunk_items(tail, width_ea, max(2, budget - last_extra))
+        chunks = _merge_small_chunks(chunks, width_ea, budget, last_extra)
 
         for chunk in chunks:
             plans.append({

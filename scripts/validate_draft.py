@@ -10,7 +10,8 @@ build_pptx.py 가 시작 시 자동 호출한다 (--skip-validate 로 우회 가
           [사진 N] 본문 참조, placeholder 문법 오류로 인한 작업 메모 본문 유출
   WARN  — 규약 이탈이지만 산출은 가능 (보고만): 부모 절 부재, 화면 절의 접근 경로
           누락, 사진 번호 비연속, 미확정 마킹 잔존, 캡션 누락, 목록 분절 의심,
-          문단 파편화 의심, 화면 텍스트(text.txt)에 없는 본문 [라벨]
+          문단 파편화 의심, 화면 텍스트(text.txt)에 없는 본문 [라벨],
+          표가 한 쪽에 담기지 않음(줄여야 할 행 수 제시)
 
 사용 예:
   python validate_draft.py --draft manual-work/manual-draft.md \
@@ -29,7 +30,8 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from draft_parser import parse_draft, plain, resolve_image
+from draft_parser import (parse_draft, plain, resolve_image,
+                          tables_height, table_room, table_height_est, PORT_BODY_W)
 
 UNRESOLVED_RE = re.compile(r"확인 필요|확정 전|TBD|미정")
 PHOTO_NO_RE = re.compile(r"\[사진\s*(\d+)\]")
@@ -50,6 +52,17 @@ def _badge_count(img_path):
             return sum(1 for m in json.load(f).get("markers", []) if m.get("found"))
     except (OSError, ValueError, TypeError):
         return None
+
+
+def _rows_to_cut(tables, room):
+    """가용 높이에 맞추려면 몇 행을 줄여야 하는지 — 뒤 행부터 덜어내며 센다.
+    행마다 높이가 다르므로(셀 문장이 길면 2~3줄) 개수 나눗셈이 아니라 실제로 덜어 본다."""
+    rows = [list(r) for t in tables for r in t["rows"]]
+    n = 0
+    while len(rows) > 2 and tables_height([{"rows": rows}]) > room:
+        rows.pop()
+        n += 1
+    return n
 
 
 def _style_texts(b):
@@ -139,6 +152,19 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
             # 반대 방향: 접근 경로가 있는데 시각 자료가 전혀 없는 절
             if has_access and not images and not phs:
                 warns.append(f"[{label}] 접근 경로는 있으나 스크린샷/placeholder 가 없습니다")
+
+            # 표가 한 쪽에 담기는가 — 빌더는 표가 이미지와 같은 컷에 안 들어가면 전용 컷으로
+            # 빼지만, 표 자체가 한 쪽보다 크면 그마저도 넘쳐 내용이 페이지 밖으로 사라진다.
+            # 빌드해 봐야 아는 것을 원고 단계에서 알린다(빌더와 같은 수식 — draft_parser).
+            tbs = [b for b in blocks if b["type"] == "table"]
+            if tbs:
+                h, room = tables_height(tbs), table_room()
+                if h > room:
+                    n_rows = sum(len(t["rows"]) for t in tbs)
+                    cut = _rows_to_cut(tbs, room)
+                    warns.append(f"[{label}] 표가 한 쪽에 담기지 않습니다 — {n_rows}행 {h:.1f}in "
+                                 f"> 가용 {room:.1f}in. 약 {cut}행을 줄이거나 표를 나눌 것"
+                                 " (셀 문장이 길면 행이 2~3줄로 커집니다)")
 
             # 배지(markers.json) 개수와 원고의 **번호 목록** 항목 수 대조 — 배지와 1:1 대응
             # 하는 것은 번호 목록(①②③·1.2.3.)이며, 불릿은 배지 없는 보충 설명이라 세지 않는다.

@@ -465,6 +465,7 @@ def resolve_image(src: str, draft_dir: str, screenshots_dir: str):
 PORT_BODY_W = 6.4          # 본문 전폭(in)
 PORT_TEXT_BOTTOM = 10.3    # 설명 프레임 하한(in) — 페이지 번호 위
 PORT_IMG_Y = 2.25          # 이미지·표 시작 y(in) — 개요 2줄 + 접근 경로 예약 뒤
+PORT_BODY_Y = 1.2          # 본문 시작 y(in) — 개요가 없는 컷은 여기서 바로 시작한다
 TABLE_PAD = 0.25           # 표 아래 여백(in)
 
 
@@ -491,3 +492,73 @@ def table_room(img_y=None):
     """표 전용 컷에서 표가 쓸 수 있는 높이(in). 개요가 예약(2줄)을 넘겨 시작 위치가
     밀리면 그만큼 줄어들므로 img_y 로 실제 시작 위치를 넘길 수 있다."""
     return PORT_TEXT_BOTTOM - (PORT_IMG_Y if img_y is None else img_y)
+
+
+def _split_one_table(header, body, first_avail, rest_avail):
+    """표 하나를 쪽에 들어갈 조각들로 나눈다 — 각 조각은 머리글 + 본문 일부.
+    first_avail 은 첫 조각이 쓸 수 있는 높이(현재 쪽의 남은 공간), 이후는 rest_avail."""
+    chunks, chunk, avail = [], [header], first_avail
+    for r in body:
+        trial = chunk + [r]
+        # 머리글 + 본문 1행은 어떤 경우에도 함께 둔다 — 머리글만 남은 조각을 막는다
+        if table_height_est(trial, PORT_BODY_W) + TABLE_PAD > avail and len(chunk) > 1:
+            chunks.append(chunk)
+            chunk, avail = [header, r], rest_avail
+        else:
+            chunk = trial
+    chunks.append(chunk)
+    return chunks
+
+
+def _fix_orphan(chunks, avail):
+    """마지막 조각에 본문이 1행만 남는 것(고아 행)을 앞 조각에서 한 행 밀어 막는다.
+    꼬리 한 줄만 다음 쪽으로 넘어가는 것은 조판에서 읽기 나쁘다. 행 순서는 그대로
+    유지되며(앞 조각의 마지막 행이 뒤 조각의 첫 행이 된다), 밀어도 들어가지 않으면
+    교정을 포기한다 — 고아를 없애려다 넘치게 만들지는 않는다."""
+    if len(chunks) < 2 or len(chunks[-1]) != 2:        # 머리글 + 본문 1행이 아니면 대상 아님
+        return chunks
+    prev = chunks[-2]
+    if len(prev) <= 2:                                  # 앞 조각도 본문 1행이면 밀 수 없다
+        return chunks
+    tail = [chunks[-1][0], prev[-1], chunks[-1][1]]
+    if table_height_est(tail, PORT_BODY_W) + TABLE_PAD > avail:
+        return chunks
+    return chunks[:-2] + [prev[:-1], tail]
+
+
+def paginate_tables(tables, first_room, rest_room=None):
+    """표 묶음을 쪽 단위로 나눈다 — 한 표가 한 쪽을 넘으면 **행 경계**에서 쪼개고
+    이어지는 쪽마다 **머리글 행을 반복**한다. 셀 중간은 절대 자르지 않으며, 머리글이
+    없으면 뒷부분이 무슨 값인지 읽을 수 없으므로 반복은 선택이 아니라 필수다.
+
+    first_room 은 개요·접근 경로 뒤에서 시작하는 첫 쪽의 가용 높이, rest_room 은
+    개요가 없어 본문 상단부터 쓰는 이어지는 쪽의 가용 높이(in). 표가 여러 개면 한
+    쪽에 이어 담고, 들어가지 않을 때만 쪽을 넘긴다.
+
+    반환: [[표블록, ...], ...] — 쪽마다 실을 표 블록 목록."""
+    rest = first_room if rest_room is None else rest_room
+    pages, cur, cur_h = [], [], 0.0
+
+    def room():
+        return first_room if not pages else rest
+
+    def flush():
+        nonlocal cur, cur_h
+        if cur:
+            pages.append(cur)
+            cur, cur_h = [], 0.0
+
+    for tb in tables:
+        rows = list(tb.get("rows") or [])
+        if not rows:
+            continue
+        header, body = rows[0], rows[1:]
+        chunks = _fix_orphan(_split_one_table(header, body, room() - cur_h, rest), rest)
+        for chunk in chunks:
+            h = table_height_est(chunk, PORT_BODY_W) + TABLE_PAD
+            if cur and cur_h + h > room():
+                flush()
+            cur.append({"type": "table", "rows": chunk})
+            cur_h += h
+    flush()
+    return pages

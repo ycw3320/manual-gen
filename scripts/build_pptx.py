@@ -34,8 +34,8 @@ if hasattr(sys.stdout, "reconfigure"):
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from draft_parser import (parse_draft, parse_inline, parse_meta, plain, image_size,
                           resolve_image, text_lines, tile_tall_image, CIRCLED,
-                          table_height_est, tables_height, TABLE_PAD,
-                          PORT_BODY_W, PORT_TEXT_BOTTOM, PORT_IMG_Y)
+                          table_height_est, tables_height, paginate_tables, TABLE_PAD,
+                          PORT_BODY_W, PORT_TEXT_BOTTOM, PORT_IMG_Y, PORT_BODY_Y)
 
 
 def fail(msg, code=1):
@@ -536,7 +536,7 @@ def split_section(sec, draft_dir, shots_dir):
     # 아래에 표가 들어갈 높이가 안 나오면 표를 앞선 전용 컷으로 뺀다 — 그대로 두면
     # 본문 프레임이 설명 하한 밖으로 밀려 내용이 페이지에서 사라진다. 원고 순서도
     # 개요 → 접근 경로 → 표 → 이미지이므로 표가 앞서는 편이 맞다.
-    table_own_cut = False
+    table_pages = []
     if tables and segments[0][0] is not None:
         v0, items0 = segments[0]
         img0 = v0 if v0["type"] == "image" else None
@@ -548,12 +548,13 @@ def split_section(sec, draft_dir, shots_dir):
             room = _avail_below_intro(img_y0) - _std_frame_h(path0)
             # 표만 겨우 들어가고 설명이 한 줄도 못 실리면 나눈 의미가 없다 — 2줄 여유 요구
             if tbl_h + (2 * LINE_H if items0 else 0) > room:
-                table_own_cut = True
-                own_room = TEXT_BOTTOM.inches - img_y0
-                if tbl_h > own_room:
-                    print(f"[build_pptx] 경고: '{sec['num']} {sec['title']}' 표가 한 쪽에 담기지 않습니다"
-                          f" (표 {tbl_h:.1f}in > 가용 {own_room:.1f}in) — 행을 줄이거나"
-                          " 표를 나눠 주세요", file=sys.stderr)
+                # 첫 쪽은 개요·접근 경로 뒤에서, 이어지는 쪽은 본문 상단에서 시작한다
+                table_pages = paginate_tables(tables, TEXT_BOTTOM.inches - img_y0,
+                                              TEXT_BOTTOM.inches - PORT_BODY_Y)
+                if len(table_pages) > 1:
+                    print(f"[build_pptx] '{sec['num']} {sec['title']}' 표가 한 쪽을 넘어 "
+                          f"{len(table_pages)}쪽으로 나눕니다 (쪽마다 머리글 반복) — 쪽을 넘기고 싶지"
+                          " 않으면 행을 줄이세요", file=sys.stderr)
 
     plans = []
     last_si = len(segments) - 1
@@ -567,7 +568,7 @@ def split_section(sec, draft_dir, shots_dir):
         # 표는 첫 컷, ※주의는 마지막 컷에만 렌더된다 — 예산도 그 컷에서만 빼야 한다.
         # 모든 컷에서 빼면 앞 컷이 불필요하게 잘게 쪼개진다(밴드 경로와 동일 규칙).
         first_extra = last_extra = 0
-        if si == 0 and tables and not table_own_cut:
+        if si == 0 and tables and not table_pages:
             first_extra = sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
                               for tb in tables)
         if si == last_si and notes:
@@ -629,7 +630,7 @@ def split_section(sec, draft_dir, shots_dir):
                 # 표는 첫 컷, ※주의는 마지막 컷에만 렌더되므로 **그 컷의 예산에서만** 뺀다
                 # — 밴드의 모든 청크에서 빼면 컷이 불필요하게 잘게 쪼개진다
                 first_extra = last_extra = 0
-                if bi == 0 and si == 0 and tables and not table_own_cut:
+                if bi == 0 and si == 0 and tables and not table_pages:
                     first_extra = sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
                                       for tb in tables)
                 if bi == nb - 1 and si == last_si and notes:
@@ -682,14 +683,16 @@ def split_section(sec, draft_dir, shots_dir):
                 "items": chunk,
             })
 
-    # 표 전용 선행 컷 — 개요·접근 경로도 여기 실리므로(아래 pi == 0 배치) 원고 순서가
-    # 그대로 유지되고, 뒤따르는 이미지 컷은 표준 위치(IMG_Y)에서 시작해 정렬도 맞는다
-    if table_own_cut:
-        plans.insert(0, {
+    # 표 전용 선행 컷 — 개요·접근 경로도 첫 컷에 실리므로(아래 pi == 0 배치) 원고 순서가
+    # 그대로 유지되고, 뒤따르는 이미지 컷은 표준 위치(IMG_Y)에서 시작해 정렬도 맞는다.
+    # 표가 한 쪽을 넘으면 쪽마다 하나씩 컷을 두고 각 컷이 자기 조각(머리글 포함)을 싣는다.
+    if table_pages:
+        plans = [{
             "kind": "screen", "sec": sec,
             "image": None, "img_path": None, "ph": None,
             "horizontal": False, "frame_h": None, "items": [],
-        })
+            "own_tables": page,
+        } for page in table_pages] + plans
 
     # 절 수준 요소 배치: 개요·접근 경로·표는 첫 컷, ※주의는 마지막 컷
     total = len(plans)
@@ -697,7 +700,10 @@ def split_section(sec, draft_dir, shots_dir):
         p["part"] = (pi + 1, total)
         p["paras"] = paras if pi == 0 else []
         p["access"] = access if pi == 0 else ""
-        p["tables"] = tables if pi == 0 else []
+        if "own_tables" in p:
+            p["tables"] = p.pop("own_tables")      # 분할된 표 조각을 각 쪽에 배정
+        else:
+            p["tables"] = tables if (pi == 0 and not table_pages) else []
         p["notes"] = notes if pi == total - 1 else []
     return plans
 
@@ -1005,7 +1011,7 @@ def render_screen(prs, plan_item, ch_of, page_no):
 
     # 개요 문단과 접근 경로를 한 프레임에 넣는다 — 줄 수 추정이 빗나가도
     # 프레임 안에서 이어지므로 서로 겹칠 수 없다
-    y = Inches(1.2)
+    y = Inches(PORT_BODY_Y)
     if plan_item["paras"] or plan_item["access"]:
         est = sum(text_lines(plain(p), INTRO_EA) for p in plan_item["paras"])
         tf = add_text(slide, BODY_X, y, BODY_W,

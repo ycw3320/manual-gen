@@ -33,7 +33,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from draft_parser import (parse_draft, parse_inline, parse_meta, plain, image_size,
-                          resolve_image, text_lines, tile_tall_image, CIRCLED)
+                          resolve_image, text_lines, tile_tall_image, CIRCLED,
+                          table_height_est, tables_height, TABLE_PAD,
+                          PORT_BODY_W, PORT_TEXT_BOTTOM, PORT_IMG_Y)
 
 
 def fail(msg, code=1):
@@ -212,10 +214,12 @@ def apply_orientation(portrait):
     TALL_RATIO_MIN = round(6.4 / 5.7, 3) if portrait else None
     if portrait:
         SLIDE_W, SLIDE_H = Inches(7.5), Inches(10.833)
-        BODY_X, BODY_W = Inches(0.55), Inches(6.4)      # 본문 전폭
+        # 세로형 기하는 draft_parser 가 단일 출처 — 원고 린터(validate_draft)가 pptx
+        # 의존 없이 같은 값으로 표 높이를 예측하므로, 여기서 직접 바꾸면 린트가 어긋난다
+        BODY_X, BODY_W = Inches(0.55), Inches(PORT_BODY_W)   # 본문 전폭
         SIDE_X, SIDE_W = None, None                      # 좌/우 분할 미사용
-        TEXT_BOTTOM = Inches(10.3)                       # 설명 프레임 하한 (페이지 번호 위)
-        IMG_Y = Inches(2.25)                             # 이미지 프레임 상단 고정
+        TEXT_BOTTOM = Inches(PORT_TEXT_BOTTOM)           # 설명 프레임 하한 (페이지 번호 위)
+        IMG_Y = Inches(PORT_IMG_Y)                       # 이미지 프레임 상단 고정
         # 세로형 이미지는 본문 폭을 가득 채우고 높이는 캡처 비율을 따른다(가변).
         # 프레임 h 는 placeholder(비율을 모름) 렌더에만 쓰는 기본값이다.
         V_FRAME_W, V_FRAME_H = Inches(6.4), Inches(4.32)
@@ -468,11 +472,6 @@ def _avail_below_intro(img_y):
     return TEXT_BOTTOM.inches - img_y - (0.05 + CAP_H.inches + 0.08)
 
 
-def _tables_height(tables):
-    """표 묶음이 차지할 실높이(in) — 표 사이 여백 포함."""
-    return sum(table_height_est(tb["rows"], BODY_W.inches) + STACK_TABLE_PAD for tb in tables)
-
-
 def _seg_layout(visual, img_path, need_lines, img_y=None):
     """세그먼트의 (줄당 문자 수, 설명 줄 예산, 확정 프레임 높이 in|None).
 
@@ -545,14 +544,15 @@ def split_section(sec, draft_dir, shots_dir):
         horiz0 = bool(path0) and image_ratio(path0) >= 1.45
         if PORTRAIT or horiz0:      # 상/하 배치에서만 표가 이미지 아래로 밀린다
             img_y0 = intro_img_y(paras, access)
+            tbl_h = tables_height(tables, BODY_W.inches)
             room = _avail_below_intro(img_y0) - _std_frame_h(path0)
             # 표만 겨우 들어가고 설명이 한 줄도 못 실리면 나눈 의미가 없다 — 2줄 여유 요구
-            if _tables_height(tables) + (2 * LINE_H if items0 else 0) > room:
+            if tbl_h + (2 * LINE_H if items0 else 0) > room:
                 table_own_cut = True
-                own_room = TEXT_BOTTOM.inches - intro_img_y(paras, access)
-                if _tables_height(tables) > own_room:
+                own_room = TEXT_BOTTOM.inches - img_y0
+                if tbl_h > own_room:
                     print(f"[build_pptx] 경고: '{sec['num']} {sec['title']}' 표가 한 쪽에 담기지 않습니다"
-                          f" (표 {_tables_height(tables):.1f}in > 가용 {own_room:.1f}in) — 행을 줄이거나"
+                          f" (표 {tbl_h:.1f}in > 가용 {own_room:.1f}in) — 행을 줄이거나"
                           " 표를 나눠 주세요", file=sys.stderr)
 
     plans = []
@@ -706,22 +706,11 @@ def split_section(sec, draft_dir, shots_dir):
 STACK_HEAD = 0.30      # 절 소제목 줄
 STACK_PARA = 0.27      # 개요 문단(12.5pt) 줄당
 STACK_ITEM = 0.25      # 항목·주의(11.5/11pt) 줄당
-STACK_TABLE_PAD = 0.25
+STACK_TABLE_PAD = TABLE_PAD
 STACK_GAP = 0.18       # 절 사이 간격
 COMBINE_Y = 1.25       # 병합 본문 시작 y (in) — 가용 높이(COMBINE_BUDGET)는 방향 프로파일이 정한다
 
-
-def table_height_est(rows, width_in):
-    """표의 실제 렌더 높이(in) 추정 — 셀 텍스트가 열 폭을 넘어 래핑되면 행이
-    그만큼 커지므로, 행별 최대 셀 줄 수를 반영한다. 좁은 폭(세로형)에서 고정
-    행높이 추정이 과소평가되어 뒤따르는 요소와 겹치는 것을 막는다."""
-    n_cols = max(len(r) for r in rows)
-    col_ea = max(6, int(width_in / n_cols * 5.9))  # 11pt 전각 기준 열당 줄 문자 수
-    h = 0.0
-    for r in rows:
-        lines = max((text_lines(plain(c), col_ea) for c in r), default=1)
-        h += max(0.37, 0.24 * lines + 0.13)
-    return h
+# table_height_est 는 draft_parser 로 이관 — 원고 린터가 pptx 의존 없이 같은 수식을 쓴다
 
 
 def sec_stack_height(sec):

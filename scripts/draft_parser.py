@@ -456,3 +456,38 @@ def resolve_image(src: str, draft_dir: str, screenshots_dir: str):
         if os.path.exists(p):
             return p
     return None
+
+
+# ---------- 표 기하 (빌더·린터 공용) ----------
+# 아래 값은 세로형(A4 7.5x10.833in) 레이아웃 프로파일이다. build_pptx 가 이 값으로
+# 프레임을 잡고, 원고 린터(validate_draft)는 pptx 의존 없이 같은 수식으로 "표가 한 쪽에
+# 담기는가"를 빌드 전에 예측한다. 두 곳이 어긋나면 린트가 거짓말을 하므로 출처를 하나로 둔다.
+PORT_BODY_W = 6.4          # 본문 전폭(in)
+PORT_TEXT_BOTTOM = 10.3    # 설명 프레임 하한(in) — 페이지 번호 위
+PORT_IMG_Y = 2.25          # 이미지·표 시작 y(in) — 개요 2줄 + 접근 경로 예약 뒤
+TABLE_PAD = 0.25           # 표 아래 여백(in)
+
+
+def table_height_est(rows, width_in):
+    """표의 실제 렌더 높이(in) 추정 — 셀 텍스트가 열 폭을 넘어 래핑되면 행이
+    그만큼 커지므로, 행별 최대 셀 줄 수를 반영한다. 좁은 폭(세로형)에서 고정
+    행높이 추정이 과소평가되어 뒤따르는 요소와 겹치는 것을 막는다."""
+    n_cols = max(len(r) for r in rows)
+    col_ea = max(6, int(width_in / n_cols * 5.9))  # 11pt 전각 기준 열당 줄 문자 수
+    h = 0.0
+    for r in rows:
+        lines = max((text_lines(plain(c), col_ea) for c in r), default=1)
+        h += max(0.37, 0.24 * lines + 0.13)
+    return h
+
+
+def tables_height(tables, width_in=None):
+    """표 블록 묶음이 차지할 총높이(in) — 표 아래 여백 포함."""
+    w = PORT_BODY_W if width_in is None else width_in
+    return sum(table_height_est(tb["rows"], w) + TABLE_PAD for tb in tables)
+
+
+def table_room(img_y=None):
+    """표 전용 컷에서 표가 쓸 수 있는 높이(in). 개요가 예약(2줄)을 넘겨 시작 위치가
+    밀리면 그만큼 줄어들므로 img_y 로 실제 시작 위치를 넘길 수 있다."""
+    return PORT_TEXT_BOTTOM - (PORT_IMG_Y if img_y is None else img_y)

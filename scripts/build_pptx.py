@@ -456,6 +456,23 @@ def _band_budget(frame_h_in, extra_lines=0, img_y_in=None):
     return max(2, int((avail - frame_h_in) / LINE_H) - extra_lines)
 
 
+def _std_frame_h(img_path):
+    """상/하 배치에서 이미지 프레임이 차지하는 표준 높이(in)."""
+    if img_path and PORTRAIT:
+        return min(H_FRAME_W.inches / image_ratio(img_path), PORT_IMG_MAX_H.inches)
+    return H_FRAME_H.inches
+
+
+def _avail_below_intro(img_y):
+    """이미지 프레임 상단부터 설명 하한까지, 캡션 몫을 뺀 가용 높이(in)."""
+    return TEXT_BOTTOM.inches - img_y - (0.05 + CAP_H.inches + 0.08)
+
+
+def _tables_height(tables):
+    """표 묶음이 차지할 실높이(in) — 표 사이 여백 포함."""
+    return sum(table_height_est(tb["rows"], BODY_W.inches) + STACK_TABLE_PAD for tb in tables)
+
+
 def _seg_layout(visual, img_path, need_lines, img_y=None):
     """세그먼트의 (줄당 문자 수, 설명 줄 예산, 확정 프레임 높이 in|None).
 
@@ -474,11 +491,8 @@ def _seg_layout(visual, img_path, need_lines, img_y=None):
         # 가로형 좌(이미지)/우(설명) — 우측 컬럼은 이미지 상단부터 하한까지 전부 쓴다
         return SIDE_EA, int((TEXT_BOTTOM.inches - img_y) / LINE_H), None
     # 표준 프레임 높이: 세로형 이미지는 비율 기반 실높이(상한 반영), 그 외는 프레임 규격
-    if img_path and PORTRAIT:
-        std_h = min(H_FRAME_W.inches / image_ratio(img_path), PORT_IMG_MAX_H.inches)
-    else:
-        std_h = H_FRAME_H.inches
-    avail = TEXT_BOTTOM.inches - img_y - (0.05 + CAP_H.inches + 0.08)
+    std_h = _std_frame_h(img_path)
+    avail = _avail_below_intro(img_y)
     budget = max(2, int((avail - std_h) / LINE_H))
     if not PORTRAIT and need_lines > budget:
         # 가로형 상/하 배치: 이미지는 프레임에 맞춰 넣는 방식(fit)이라 비율에 따라 폭이
@@ -519,6 +533,28 @@ def split_section(sec, draft_dir, shots_dir):
             cur_items.extend((it["marker"], it["text"]) for it in b["items"])
     segments.append((cur_visual, cur_items))
 
+    # 표는 항목과 달리 '실제 도형'이라 줄 예산을 깎아도 자리가 생기지 않는다. 이미지
+    # 아래에 표가 들어갈 높이가 안 나오면 표를 앞선 전용 컷으로 뺀다 — 그대로 두면
+    # 본문 프레임이 설명 하한 밖으로 밀려 내용이 페이지에서 사라진다. 원고 순서도
+    # 개요 → 접근 경로 → 표 → 이미지이므로 표가 앞서는 편이 맞다.
+    table_own_cut = False
+    if tables and segments[0][0] is not None:
+        v0, items0 = segments[0]
+        img0 = v0 if v0["type"] == "image" else None
+        path0 = resolve_image(img0["src"], draft_dir, shots_dir) if img0 else None
+        horiz0 = bool(path0) and image_ratio(path0) >= 1.45
+        if PORTRAIT or horiz0:      # 상/하 배치에서만 표가 이미지 아래로 밀린다
+            img_y0 = intro_img_y(paras, access)
+            room = _avail_below_intro(img_y0) - _std_frame_h(path0)
+            # 표만 겨우 들어가고 설명이 한 줄도 못 실리면 나눈 의미가 없다 — 2줄 여유 요구
+            if _tables_height(tables) + (2 * LINE_H if items0 else 0) > room:
+                table_own_cut = True
+                own_room = TEXT_BOTTOM.inches - intro_img_y(paras, access)
+                if _tables_height(tables) > own_room:
+                    print(f"[build_pptx] 경고: '{sec['num']} {sec['title']}' 표가 한 쪽에 담기지 않습니다"
+                          f" (표 {_tables_height(tables):.1f}in > 가용 {own_room:.1f}in) — 행을 줄이거나"
+                          " 표를 나눠 주세요", file=sys.stderr)
+
     plans = []
     last_si = len(segments) - 1
     for si, (visual, items) in enumerate(segments):
@@ -531,7 +567,7 @@ def split_section(sec, draft_dir, shots_dir):
         # 표는 첫 컷, ※주의는 마지막 컷에만 렌더된다 — 예산도 그 컷에서만 빼야 한다.
         # 모든 컷에서 빼면 앞 컷이 불필요하게 잘게 쪼개진다(밴드 경로와 동일 규칙).
         first_extra = last_extra = 0
-        if si == 0 and tables:
+        if si == 0 and tables and not table_own_cut:
             first_extra = sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
                               for tb in tables)
         if si == last_si and notes:
@@ -593,7 +629,7 @@ def split_section(sec, draft_dir, shots_dir):
                 # 표는 첫 컷, ※주의는 마지막 컷에만 렌더되므로 **그 컷의 예산에서만** 뺀다
                 # — 밴드의 모든 청크에서 빼면 컷이 불필요하게 잘게 쪼개진다
                 first_extra = last_extra = 0
-                if bi == 0 and si == 0 and tables:
+                if bi == 0 and si == 0 and tables and not table_own_cut:
                     first_extra = sum(math.ceil((table_height_est(tb["rows"], BODY_W.inches) + 0.25) / LINE_H)
                                       for tb in tables)
                 if bi == nb - 1 and si == last_si and notes:
@@ -645,6 +681,15 @@ def split_section(sec, draft_dir, shots_dir):
                 "frame_h": frame_h,
                 "items": chunk,
             })
+
+    # 표 전용 선행 컷 — 개요·접근 경로도 여기 실리므로(아래 pi == 0 배치) 원고 순서가
+    # 그대로 유지되고, 뒤따르는 이미지 컷은 표준 위치(IMG_Y)에서 시작해 정렬도 맞는다
+    if table_own_cut:
+        plans.insert(0, {
+            "kind": "screen", "sec": sec,
+            "image": None, "img_path": None, "ph": None,
+            "horizontal": False, "frame_h": None, "items": [],
+        })
 
     # 절 수준 요소 배치: 개요·접근 경로·표는 첫 컷, ※주의는 마지막 컷
     total = len(plans)
@@ -1104,6 +1149,15 @@ def self_check(prs, combined_idx=frozenset()):
         # 짧은 항목이 합산되므로 제외한다 (높이는 병합 예산이 이미 보장)
         if item_count > MAX_ITEMS and idx not in combined_idx:
             problems.append(f"슬라이드 {idx}: 설명 항목 {item_count}개 (분할 기준 {MAX_ITEMS} 초과)")
+        # 텍스트 프레임 이탈 — 표·개요가 길어 본문이 밀리면 내용이 페이지 밖으로 사라진다.
+        # 산출물 검증(verify_pptx)과 같은 규칙을 빌드 시점에도 두어 즉시 드러나게 한다.
+        for shape in slide.shapes:
+            if (getattr(shape, "has_text_frame", False) and shape.top is not None
+                    and shape.height is not None and shape.top + shape.height > SLIDE_H):
+                over = (shape.top + shape.height - SLIDE_H) / 914400
+                problems.append(f"슬라이드 {idx}: 텍스트 프레임이 페이지 아래로 {over:.2f}in "
+                                "넘칩니다 — 표가 길거나 개요가 예약 공간을 초과했습니다")
+                break
 
     # 렌더 폭 균일 게이트 — 세로형 전용(가로형은 좌/우·상/하 배치라 이미지 폭이
     # 본래 다르다). 세로 긴 캡처가 조용히 폭 축소되어 다른 장표와 크기가 달라지는

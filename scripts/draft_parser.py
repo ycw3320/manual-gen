@@ -39,14 +39,34 @@ def plain(text):
     return "".join(t for t, _ in parse_inline(text))
 
 
+# 글자 폭 — 11pt 렌더 실측 기반(전각 = 1.0). ASCII 를 일률 0.5 로 보면 대문자와
+# 넓은 글자(m·w)에서 줄 수를 적게 잡아 실제로 넘친다(측정 72표본 중 10건, 최대 2줄).
+# 실측 평균: 소문자·숫자 0.64 / 대문자 0.72 / m·w 0.90 / i·l·j 0.36.
+_W_NARROW = set("iljtfr'|!.,;:()[]{}/\\ ")
+_W_WIDE = set("mwMW@%")
+
+
+def char_units(c):
+    """전각(한글)을 1.0 으로 본 글자 폭."""
+    if ord(c) >= 0x2E80:
+        return 1.0
+    if c in _W_WIDE:
+        return 0.95
+    if c.isupper():
+        return 0.75
+    if c in _W_NARROW:
+        return 0.40
+    return 0.65
+
+
 def text_lines(text, width_ea):
-    """렌더 줄 수 추정 — 한글 등 전각은 1.0, ASCII는 0.5 폭으로 가중한다.
+    """렌더 줄 수 추정 — 글자별 실측 폭(char_units)으로 가중한다.
 
     width_ea 는 해당 텍스트 프레임의 '전각 기준 줄당 문자 수'. 단순 len() 나눗셈은
     한글 문서에서 줄 수를 절반 가까이 과소평가해 요소 겹침을 만들기 때문이다.
+    추정은 언제나 실제 이상이어야 한다 — 적게 잡으면 본문이 페이지를 넘는다.
     """
-    units = sum(0.5 if ord(c) < 0x2E80 else 1.0 for c in text)
-    return max(1, math.ceil(units / width_ea))
+    return max(1, math.ceil(sum(char_units(c) for c in text) / width_ea))
 
 
 def png_size(path):
@@ -469,16 +489,26 @@ PORT_BODY_Y = 1.2          # 본문 시작 y(in) — 개요가 없는 컷은 여
 TABLE_PAD = 0.25           # 표 아래 여백(in)
 
 
+# 표 행 높이 — PowerPoint 렌더 실측(11pt, 129표본)에서 얻은 값이다. 실측은
+# h = 0.1833 x 줄수 + 0.100 (최소 0.350) 에 완전히 선형으로 들어맞는다
+# (0.1833in = 13.2pt = 11pt x 1.2 줄간격, 0.100in = 셀 상하 여백).
+ROW_LINE_H = 0.1833        # 줄당 높이(in)
+ROW_PAD = 0.10             # 셀 상하 여백(in)
+ROW_MIN_H = 0.35           # 최소 행 높이(in)
+ROW_SAFETY = 0.02          # 행당 여유 — 폰트 대체·줄바꿈 경계 오차를 흡수한다
+
+
 def table_height_est(rows, width_in):
     """표의 실제 렌더 높이(in) 추정 — 셀 텍스트가 열 폭을 넘어 래핑되면 행이
-    그만큼 커지므로, 행별 최대 셀 줄 수를 반영한다. 좁은 폭(세로형)에서 고정
-    행높이 추정이 과소평가되어 뒤따르는 요소와 겹치는 것을 막는다."""
+    그만큼 커지므로, 행별 최대 셀 줄 수를 반영한다. 계수는 실측 기반이지만
+    행마다 ROW_SAFETY 를 더해 언제나 실제 이상으로 잡는다 — 적게 잡으면 표가
+    페이지를 넘고, 많이 잡으면 여백이 남을 뿐이다."""
     n_cols = max(len(r) for r in rows)
     col_ea = max(6, int(width_in / n_cols * 5.9))  # 11pt 전각 기준 열당 줄 문자 수
     h = 0.0
     for r in rows:
         lines = max((text_lines(plain(c), col_ea) for c in r), default=1)
-        h += max(0.37, 0.24 * lines + 0.13)
+        h += max(ROW_MIN_H, ROW_LINE_H * lines + ROW_PAD) + ROW_SAFETY
     return h
 
 

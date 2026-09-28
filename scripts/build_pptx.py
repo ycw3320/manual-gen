@@ -508,16 +508,22 @@ def _marker_no(marker):
     return int(m.group(1)) if m else None
 
 
+def intro_end_y(paras, access):
+    """개요·접근 경로를 렌더한 뒤의 y(in) — render_screen 과 동일 수식. 시각 요소가 없는
+    컷은 표·설명이 여기서 바로 시작한다."""
+    y = BODY_Y.inches
+    if paras or access:
+        est = sum(text_lines(plain(p), INTRO_EA) for p in paras)
+        y += 0.28 * est + (0.36 if access else 0.02) + 0.08
+    return y
+
+
 def intro_img_y(paras, access):
     """개요·접근 경로를 렌더한 뒤의 이미지 시작 y(in) — render_screen 과 동일 수식.
 
     개요가 길면 이미지 프레임이 아래로 밀리는데(img_y = max(IMG_Y, y)), 예산을 상수
     IMG_Y 로만 계산하면 그만큼 본문이 슬라이드 밖으로 넘친다."""
-    y = BODY_Y.inches
-    if paras or access:
-        est = sum(text_lines(plain(p), INTRO_EA) for p in paras)
-        y += 0.28 * est + (0.36 if access else 0.02) + 0.08
-    return max(IMG_Y.inches, y)
+    return max(IMG_Y.inches, intro_end_y(paras, access))
 
 
 def _merge_small_chunks(chunks, width_ea, budget, last_extra=0):
@@ -637,10 +643,17 @@ def split_section(sec, draft_dir, shots_dir):
                 # 첫 쪽은 개요·접근 경로 뒤에서, 이어지는 쪽은 본문 상단에서 시작한다
                 table_pages = paginate_tables(tables, TEXT_BOTTOM.inches - img_y0,
                                               TEXT_BOTTOM.inches - BODY_Y.inches)
-                if len(table_pages) > 1:
-                    print(f"[build_pptx] '{sec['num']} {sec['title']}' 표가 한 쪽을 넘어 "
-                          f"{len(table_pages)}쪽으로 나눕니다 (쪽마다 머리글 반복) — 쪽을 넘기고 싶지"
-                          " 않으면 행을 줄이세요", file=sys.stderr)
+    elif tables:
+        # 시각 요소가 없는 첫 컷 — 표는 개요 바로 아래에서 시작하고 설명이 그 아래에 이어진다.
+        # 표와 설명 2줄이 한 쪽에 안 들어가면 표를 전용 컷으로 빼고, 한 쪽을 넘는 표는 행
+        # 경계에서 나눠 쪽마다 머리글을 반복한다(이미지 절과 같은 규칙).
+        room0 = TEXT_BOTTOM.inches - intro_end_y(paras, access)
+        if tables_height(tables, BODY_W.inches) + (2 * LINE_H if segments[0][1] else 0) > room0:
+            table_pages = paginate_tables(tables, room0, TEXT_BOTTOM.inches - BODY_Y.inches)
+    if len(table_pages) > 1:
+        print(f"[build_pptx] '{sec['num']} {sec['title']}' 표가 한 쪽을 넘어 "
+              f"{len(table_pages)}쪽으로 나눕니다 (쪽마다 머리글 반복) — 쪽을 넘기고 싶지"
+              " 않으면 행을 줄이세요", file=sys.stderr)
 
     plans = []
     last_si = len(segments) - 1
@@ -768,6 +781,17 @@ def split_section(sec, draft_dir, shots_dir):
                 "frame_h": frame_h,
                 "items": chunk,
             })
+
+    # 시각 요소 없는 첫 설명 컷은 표 마지막 조각 아래 남는 자리에 들어가면 그 쪽에 합친다
+    # — 표 쪽 뒤에 설명 한두 줄(또는 ※만, 설명이 없으면 빈 쪽)이 따로 생기지 않게 한다.
+    if table_pages and segments[0][0] is None and plans:
+        start = BODY_Y.inches if len(table_pages) > 1 else intro_end_y(paras, access)
+        left = TEXT_BOTTOM.inches - start - tables_height(table_pages[-1], BODY_W.inches)
+        need = sum(text_lines(plain(t), WIDE_EA) for _, t in plans[0]["items"])
+        if len(plans) == 1 and notes:
+            need += sum(text_lines(plain(nt), WIDE_EA) for nt in notes)
+        if need * LINE_H <= left:
+            plans[0]["own_tables"] = table_pages.pop()
 
     # 표 전용 선행 컷 — 개요·접근 경로도 첫 컷에 실리므로(아래 pi == 0 배치) 원고 순서가
     # 그대로 유지되고, 뒤따르는 이미지 컷은 표준 위치(IMG_Y)에서 시작해 정렬도 맞는다.

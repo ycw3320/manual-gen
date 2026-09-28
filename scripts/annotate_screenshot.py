@@ -65,7 +65,7 @@ def parse_markers(spec: str):
             fail(f"마커 형식 오류: '{part}' (기대: x,y,번호 또는 x,y,w,h,번호 — 예: 0.15,0.2,1)")
         if not (0 <= x <= 1 and 0 <= y <= 1):
             fail(f"마커 좌표는 0~1 범위여야 합니다: '{part}'")
-        markers.append((x, y, w, h, n))
+        markers.append((x, y, w, h, n, None, None))
     if not markers:
         fail("마커가 없습니다")
     return markers
@@ -119,8 +119,23 @@ def load_markers_file(path: str, image_path: str, image_size, force: bool):
     except OSError:
         pass
 
-    markers = [(m["x"], m["y"], m.get("w"), m.get("h"), m["n"])
-               for m in data.get("markers", []) if m.get("found")]
+    # bx·by(선택): 배지 중심 좌표(0~1). 없으면 종전대로 테두리 좌상단 모서리에 찍는다.
+    # 세로로 붙은 작은 글자 항목(구역 목록·탭 등)은 모서리에 찍으면 배지가 항목 사이에 떠서
+    # 위아래 어느 항목인지 헷갈린다 → 전처리 도구가 항목 왼쪽·세로 가운데 좌표를 넣어 준다.
+    markers = []
+    for m in data.get("markers", []):
+        if not m.get("found"):
+            continue
+        bx, by = m.get("bx"), m.get("by")
+        if (bx is None) != (by is None):
+            fail(f"배지 #{m.get('n')}: bx·by 는 함께 지정해야 합니다({path})")
+        if bx is not None:
+            # 픽셀값을 넣는 실수가 흔하다 — 0~1 을 크게 벗어나면 배지가 이미지 밖으로 사라진다
+            if not all(isinstance(v, (int, float)) for v in (bx, by)) or \
+                    not (-0.05 <= bx <= 1.05 and -0.05 <= by <= 1.05):
+                fail(f"배지 #{m.get('n')}: bx·by 는 이미지 대비 0~1 좌표여야 합니다"
+                     f"(받은 값 {bx}, {by}) — 픽셀값을 넣었는지 확인하세요({path})")
+        markers.append((m["x"], m["y"], m.get("w"), m.get("h"), m["n"], bx, by))
     if not markers:
         fail(f"markers 파일에 유효 좌표가 없습니다(found=true 0건): {path}")
     return markers
@@ -166,15 +181,21 @@ def main():
     # 1) 요소 강조 테두리 먼저 (배지가 테두리 선 위에 오도록)
     line_w = max(2, round(w * 0.0022))
     if not args.no_box:
-        for x, y, bw, bh, n in markers:
+        for x, y, bw, bh, n, _bx, _by in markers:
             if bw and bh:
                 x0, y0 = x * w, y * h
                 x1, y1 = min(w - 1, x0 + bw * w), min(h - 1, y0 + bh * h)
                 draw.rectangle([x0, y0, x1, y1], outline=args.color, width=line_w)
 
-    # 2) 번호 배지 — 테두리가 있으면 그 좌상단 모서리에 걸치게 찍힌다
-    for x, y, bw, bh, n in markers:
-        cx, cy = x * w, y * h
+    # 2) 번호 배지 — 테두리가 있으면 그 좌상단 모서리에 걸치게 찍힌다(bx·by 가 있으면 그 자리)
+    for x, y, bw, bh, n, bx, by in markers:
+        if bx is not None and by is not None:
+            # 지정 위치는 대개 요소 바깥(왼쪽)이라 이미지 가장자리 요소면 배지가 잘린다 —
+            # 배지 전체가 이미지 안에 들어오도록 중심을 안쪽으로 당긴다
+            cx = min(max(bx * w, r + 2), w - r - 2)
+            cy = min(max(by * h, r + 2), h - r - 2)
+        else:
+            cx, cy = x * w, y * h
         # 흰 외곽선 → 본체 원 → 흰 숫자 (배경과 무관하게 눈에 띄도록)
         draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill=(255, 255, 255, 230))
         draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=args.color)

@@ -412,7 +412,7 @@ LINE_H = 0.275  # 설명 항목 줄당 높이(in) — 11.5pt + space_after 6pt
 def _load_badge_positions(img_path):
     """이미지에 대응하는 markers.json 에서 배지별 세로 위치를 읽는다.
 
-    반환: {배지 번호(n): y_frac} — 이미지 전체 높이 대비 배지 상단(0~1).
+    반환: {배지 번호(n): y_frac} — 이미지 전체 높이 대비 배지가 찍힌 세로 위치(0~1).
     markers.json 이 없거나 파싱 실패면 {}. **번호를 키로 돌려주는 이유**: 순서 목록으로
     돌려주면 미발견(found=false) 배지가 섞였을 때 원고 항목과 한 칸씩 밀려 엉뚱한
     밴드로 배분된다. 원고 마커(①=1, '1.'=1)와 번호로 조인해야 안전하다."""
@@ -431,7 +431,11 @@ def _load_badge_positions(img_path):
             out = {}
             for m in data.get("markers", []):
                 if m.get("found") and m.get("n"):
-                    out[int(m["n"])] = float(m.get("y", 0.0))
+                    # 배지가 실제로 찍힌 세로 위치 — bx·by 가 있으면 그 자리(annotate 와 같은
+                    # 규칙), 없으면 테두리 좌상단 모서리(y). 긴 캡처를 띠로 나눌 때 배지와
+                    # 설명이 서로 다른 띠에 실리지 않게 한다.
+                    by = m.get("by")
+                    out[int(m["n"])] = float(by if isinstance(by, (int, float)) else m.get("y", 0.0))
             return out
         except (OSError, ValueError, KeyError, TypeError):
             continue

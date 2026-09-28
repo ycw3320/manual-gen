@@ -20,12 +20,15 @@ python-pptx 가 파일에 적는 표 높이는 '요청값'일 뿐이다. 실제 
 - 본문 글꼴이나 글자 크기를 바꿨을 때
 - 슬라이드 규격(본문 폭·설명 하한·여백)을 바꿨을 때
 - 표 셀 여백이나 `render_table` 의 조판을 손봤을 때
+- 기본 글꼴을 바꿨을 때 — 빌더가 고를 수 있는 글꼴마다(`--font pretendard`, `--font malgun`)
+  각각 돌려 둘 다 통과해야 한다
 - 다른 환경(다른 PowerPoint 버전·글꼴 대체)에서 표가 넘친다는 보고를 받았을 때
 
 ## 3단계 절차
 
 ```bash
-# 1) 측정용 표 129개 생성 — 빌더의 render_table 을 그대로 쓴다
+# 1) 측정용 표 129개 생성 — 빌더의 render_table 과 글꼴 선택을 그대로 쓴다
+#    (--font auto|pretendard|malgun, 기본 auto = 빌더 기본과 같은 글꼴)
 python tools/make_table_probe.py --out-dir C:\work\calib
 
 # 2) PowerPoint 로 실제 행 높이 측정

@@ -45,8 +45,12 @@ HANGUL_NCH = (2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 56, 64
 ASCII_NCH = (10, 20, 30, 45, 60, 90)
 
 
-def build(out_dir):
+def build(out_dir, font="auto"):
     B.apply_orientation(True)                             # 세로형(A4) 기준으로 보정한다
+    # 빌더가 실제로 쓰는 글꼴로 잰다 — 글꼴마다 글자 폭·줄 높이가 다르므로, 선택을 빼먹으면
+    # 모듈 초깃값(맑은 고딕)으로 재게 되어 기본 글꼴(Pretendard)의 보정이 검증되지 않는다
+    used = B.select_fonts(font)
+    print(f"[probe] 측정 글꼴: {used}")
     prs = Presentation()
     prs.slide_width, prs.slide_height = B.SLIDE_W, B.SLIDE_H
     meta = []
@@ -80,7 +84,10 @@ def build(out_dir):
 def main():
     ap = argparse.ArgumentParser(description="표 기하 보정용 측정 pptx 생성")
     ap.add_argument("--out-dir", required=True, help="probe.pptx·probe_meta.json 을 둘 폴더")
-    build(ap.parse_args().out_dir)
+    ap.add_argument("--font", choices=["auto", "pretendard", "malgun"], default="auto",
+                    help="측정 글꼴 — 빌더 --font 와 같은 값(기본 auto = 빌더 기본과 동일)")
+    a = ap.parse_args()
+    build(a.out_dir, a.font)
 
 
 if __name__ == "__main__":

@@ -59,18 +59,24 @@ NOTE = RGBColor(0xC0, 0x39, 0x2B)
 WHITE = RGBColor(0xFF, 0xFF, 0xFF)
 PH_BG = RGBColor(0xEC, 0xEE, 0xF1)
 PH_TX = RGBColor(0x6B, 0x72, 0x80)
-FONT = "맑은 고딕"
+LINE_GRAY = RGBColor(0xDD, 0xE1, 0xE6)   # 목차 구분선·표 행 구분선
 
-# 테마 팔레트 — dark(표지·간지·헤더 배경), accent(포인트·접근 경로·액센트 바),
-# soft/softer(어두운 배경 위 보조 텍스트), head_num(헤더의 절 번호).
-# 본문 텍스트(TEXT)·주의(NOTE)·placeholder 색은 의미색이라 테마와 무관하게 공통이다.
+# 글꼴 — select_fonts() 가 설치 여부를 보고 정한다. Pretendard 가 있으면 본문은
+# Pretendard, 제목·강조는 Pretendard SemiBold(굵게보다 가벼워 정돈돼 보인다), 큰 숫자는
+# Pretendard Light. 없으면 맑은 고딕 + 굵게로 대신한다(어느 Windows PC 에나 있다).
+# 두 글꼴 모두 표 높이·줄바꿈 추정을 넘지 않음을 실측으로 확인했다(tools/ 하네스).
+FONT = "맑은 고딕"
+FONT_SEMI = None
+FONT_LIGHT = None
+
+# 테마 팔레트 — dark(제목·짙은 도형), accent(번호·라벨·강조선). 옅은 틴트(알약·표 머리·
+# 구분선·표지 도형)는 accent 에서 파생한다. 본문 텍스트(TEXT)·주의(NOTE)·placeholder 색은
+# 의미색이라 테마와 무관하게 공통이다. 모든 테마가 흰 바탕 위에서 읽히도록, 글자에 쓰는
+# accent 는 명도비 4.5:1 이상으로 보정한다(도형·선에는 원색을 쓴다).
 THEMES = {
-    "navy":     {"dark": "1F2A44", "accent": "2E5BFF",
-                 "soft": "B9C4DE", "softer": "9AA5C0", "head_num": "7E96E8"},
-    "forest":   {"dark": "1F3D2F", "accent": "0FA47A",
-                 "soft": "BCD8CB", "softer": "98BFAF", "head_num": "6FC9A8"},
-    "charcoal": {"dark": "2B2F36", "accent": "E8590C",
-                 "soft": "C9CED6", "softer": "A6ADB8", "head_num": "F08C4B"},
+    "navy":     {"dark": "1B2A4A", "accent": "2F5BD2"},
+    "forest":   {"dark": "173B33", "accent": "13806C"},
+    "charcoal": {"dark": "2A2E35", "accent": "D5482A"},
 }
 
 
@@ -78,18 +84,75 @@ def _rgb(hex6):
     return RGBColor(int(hex6[0:2], 16), int(hex6[2:4], 16), int(hex6[4:6], 16))
 
 
-def apply_theme(name):
-    """표지·간지·헤더의 배경/포인트 팔레트를 모듈 전역에 적용한다.
+def _set_palette(dark_hex, accent_hex, name):
+    """dark·accent 두 색에서 테마 전체 팔레트를 파생해 모듈 전역에 적용한다.
 
-    ACCENT 는 흰 배경 위(본문 '접근 경로'·CONTENTS 바), ACCENT_ON_DARK 는 어두운
-    배경 위(표지 바·간지 장 번호) 용도다 — 기본 3종은 두 값이 같고, 템플릿 추출
-    경로에서만 갈린다(밝은 accent 는 흰 배경에서 안 읽히므로 본문용만 어둡게)."""
-    global THEME, DARK, ACCENT, ACCENT_ON_DARK, DARK_SOFT, DARK_SOFTER, HEAD_NUM
-    t = THEMES[name]
+    ACCENT     흰 바탕 위 글자(번호·라벨·접근 경로) — 명도비 4.5:1 보장
+    ACCENT_ART 도형·강조선 — 원색 그대로
+    TINT_SOFT  알약 라벨·표 머리 배경(아주 옅게) / TINT_RULE 머리·꼬리 가는 선 /
+    TINT_MID   표지 도형의 중간 톤"""
+    global THEME, DARK, ACCENT, ACCENT_ART, ACCENT_ON_DARK, TINT_SOFT, TINT_RULE, TINT_MID
     THEME = name
-    DARK, ACCENT = _rgb(t["dark"]), _rgb(t["accent"])
-    ACCENT_ON_DARK = ACCENT
-    DARK_SOFT, DARK_SOFTER, HEAD_NUM = _rgb(t["soft"]), _rgb(t["softer"]), _rgb(t["head_num"])
+    DARK = _rgb(dark_hex)
+    ACCENT_ART = _rgb(accent_hex)
+    ACCENT = _rgb(_darken_for_white_bg(accent_hex))
+    ACCENT_ON_DARK = ACCENT_ART
+    h, _l, s = _hex_hls(accent_hex)
+    # 틴트는 채도를 눌러 둔다 — 원색 채도 그대로 밝히면 민트·분홍처럼 들떠 보인다
+    TINT_SOFT = _rgb(_hls_hex(h, 0.955, min(s, 0.50)))
+    TINT_RULE = _rgb(_hls_hex(h, 0.80, min(s, 0.45)))
+    TINT_MID = _rgb(_hls_hex(h, 0.68, min(s, 0.48)))
+
+
+def apply_theme(name):
+    """기본 테마 3종 중 하나를 적용한다."""
+    t = THEMES[name]
+    _set_palette(t["dark"], t["accent"], name)
+
+
+def _installed_font_names():
+    """설치된 글꼴 이름 집합 — Windows 는 레지스트리, 그 밖에는 fc-list."""
+    names = set()
+    try:
+        import winreg
+        for root in (winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER):
+            try:
+                key = winreg.OpenKey(root, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts")
+            except OSError:
+                continue
+            i = 0
+            while True:
+                try:
+                    n = winreg.EnumValue(key, i)[0]
+                except OSError:
+                    break
+                names.add(re.sub(r"\s*\((TrueType|OpenType)\)$", "", n).strip())
+                i += 1
+    except ImportError:
+        import subprocess
+        try:
+            out = subprocess.run(["fc-list", ":", "family"], capture_output=True, text=True,
+                                 timeout=10).stdout
+            for line in out.splitlines():
+                names.update(x.strip() for x in line.split(","))
+        except (OSError, subprocess.SubprocessError):
+            pass
+    return names
+
+
+def select_fonts(pref="auto"):
+    """글꼴을 정한다 — pref: auto(Pretendard 있으면 사용) / pretendard / malgun.
+    반환: 실제로 쓴 본문 글꼴 이름."""
+    global FONT, FONT_SEMI, FONT_LIGHT
+    names = _installed_font_names() if pref == "auto" else set()
+    has_pre = pref == "pretendard" or bool(names & {"Pretendard", "Pretendard Regular"})
+    if has_pre and pref != "malgun":
+        FONT = "Pretendard"
+        FONT_SEMI = "Pretendard SemiBold" if (pref == "pretendard" or "Pretendard SemiBold" in names) else None
+        FONT_LIGHT = "Pretendard Light" if (pref == "pretendard" or "Pretendard Light" in names) else None
+    else:
+        FONT, FONT_SEMI, FONT_LIGHT = "맑은 고딕", None, None
+    return FONT
 
 
 def _hls_hex(h, l, s):
@@ -158,32 +221,14 @@ def theme_from_template(path):
     _, _, as0 = _hex_hls(accent)
     if ds0 < 0.08 or as0 < 0.08:
         return None
-    # DARK 는 표지·간지의 '배경'이면서 CONTENTS·헤딩의 '흰 배경 위 텍스트'로도 쓰인다 —
-    # 밝은 dk2(예: Office Gold)면 배경 위 흰 글씨도, 흰 배경 위 제목도 모두 안 읽힌다.
-    # 대비 기준을 만족할 때까지 어둡게 내린다(색상·채도 유지).
-    dh, dl, ds = _hex_hls(dark)
+    # DARK 는 흰 바탕 위 제목 글자다 — 밝은 dk2(예: Office Gold)면 읽히지 않으므로
+    # 대비 기준을 만족할 때까지 어둡게 내린다(색상·채도 유지). accent 의 글자용 보정은
+    # _set_palette 가 한다(도형·선에는 원색을 그대로 쓴다).
+    _dh, dl, _ds = _hex_hls(dark)
     if dl > 0.5 or _contrast_on_white(dark) < 4.5:
         dark = _darken_for_white_bg(dark)
-        dh, dl, ds = _hex_hls(dark)
-    ah, al, as_ = _hex_hls(accent)
-    # ACCENT 는 흰 배경 위 본문 색으로도 쓰인다('접근 경로'·CONTENTS 액센트 바) —
-    # 밝은 accent(노랑·라이트그린 등)를 그대로 쓰면 대비가 1.4:1 수준이라 읽히지 않는다.
-    # 본문용만 대비 기준까지 어둡게 하고, 표지·간지의 원색은 ACCENT_ON_DARK 로 보존한다.
-    accent_text = _darken_for_white_bg(accent)
-    # 반대 방향 가드: 어두운 accent(예: Blue Darker 50%)는 어두운 표지·간지 위에서
-    # 보이지 않으므로, 배경(dark)보다 충분히 밝지 않으면 명도를 올려 쓴다
-    accent_dark_bg = accent
-    ad_h, ad_l, ad_s = _hex_hls(accent)
-    if ad_l < dl + 0.18:
-        accent_dark_bg = _hls_hex(ad_h, min(0.72, dl + 0.30), max(0.35, ad_s))
-    # 보조 팔레트 파생 — 기본 3종 테마의 명도·채도 관계를 따른다
-    global THEME, DARK, ACCENT, ACCENT_ON_DARK, DARK_SOFT, DARK_SOFTER, HEAD_NUM
-    THEME = "template"
-    DARK, ACCENT, ACCENT_ON_DARK = _rgb(dark), _rgb(accent_text), _rgb(accent_dark_bg)
-    DARK_SOFT = _rgb(_hls_hex(dh, 0.80, min(0.45, max(0.12, ds))))
-    DARK_SOFTER = _rgb(_hls_hex(dh, 0.68, min(0.30, max(0.10, ds * 0.7))))
-    HEAD_NUM = _rgb(_hls_hex(ah, 0.70, min(0.75, max(0.25, as_))))
-    return dark, accent_text
+    _set_palette(dark, accent, "template")
+    return dark, _darken_for_white_bg(accent)
 
 
 apply_theme("navy")
@@ -206,8 +251,14 @@ def apply_orientation(portrait):
     global PORTRAIT, SLIDE_W, SLIDE_H, BODY_X, BODY_W, SIDE_X, SIDE_W, TEXT_BOTTOM
     global IMG_Y, V_FRAME_W, V_FRAME_H, H_FRAME_W, H_FRAME_H, PORT_IMG_MAX_H, IMG_MIN_H
     global SIDE_EA, WIDE_EA, INTRO_EA, PLAIN_LINES, TALL_RATIO_MIN
-    global COMBINE_BUDGET, TOC_COLS, TOC_PER_COL, TOC_COL_W
+    global COMBINE_BUDGET, TOC_COL_XS, TOC_COL_W, TOC_TOP
+    global HEAD_RUN_Y, RULE_TOP_Y, TITLE_Y, TITLE_H, RULE_BOT_Y, FOOT_Y, COVER_ART
     PORTRAIT = portrait
+    # 머리·꼬리 크롬 — 본문 시작(PORT_BODY_Y 1.2in)·설명 하한(TEXT_BOTTOM)은 그대로 두고
+    # 그 바깥 여백에만 그린다. 본문 기하를 바꾸면 표 보정·쪽 나눔 결과가 달라지기 때문이다.
+    HEAD_RUN_Y, RULE_TOP_Y = Inches(0.26), Inches(0.50)     # 러닝헤더 · 위 가는 선
+    TITLE_Y, TITLE_H = Inches(0.60), Inches(0.50)           # 절 제목(1.10in 에서 끝남)
+    TOC_TOP = Inches(0.95)                                   # 목차 항목 시작
     # 폭 균일 임계: 이미지 비율(가로/세로)이 이 값 미만이면 전폭 렌더 시 높이 상한에
     # 걸려 폭이 줄어든다(=매뉴얼 내 다른 캡처와 크기 불일치). 그 아래는 타일 분할한다.
     # 세로형 = BODY_W/PORT_IMG_MAX_H. 가로형은 폭 축소 압력이 낮아 미사용(None).
@@ -229,7 +280,9 @@ def apply_orientation(portrait):
         SIDE_EA, WIDE_EA, INTRO_EA = 33, 37, 35          # 전각 기준 줄당 문자 수(폭 비례)
         PLAIN_LINES = 30                                 # 시각 요소 없는 절의 설명 줄 예산
         COMBINE_BUDGET = 8.6                             # 개요 병합 본문 가용 높이(in)
-        TOC_COLS, TOC_PER_COL, TOC_COL_W = 1, 26, Inches(6.4)
+        TOC_COL_XS, TOC_COL_W = [Inches(2.35)], Inches(4.6)   # 목차 항목 컬럼(좌측은 제목)
+        RULE_BOT_Y, FOOT_Y = Inches(10.40), Inches(10.46)     # 아래 가는 선 · 쪽 번호
+        COVER_ART = (0.55, 0.75, 3, 3, 6.4 / 3)          # 표지 도형 격자: x, y, 열, 행, 칸(in)
     else:
         SLIDE_W, SLIDE_H = Inches(13.333), Inches(7.5)
         BODY_X, BODY_W = Inches(0.55), Inches(12.2)
@@ -243,27 +296,49 @@ def apply_orientation(portrait):
         SIDE_EA, WIDE_EA, INTRO_EA = 33, 72, 68
         PLAIN_LINES = 16
         COMBINE_BUDGET = 5.6
-        TOC_COLS, TOC_PER_COL, TOC_COL_W = 2, 17, Inches(5.9)
+        TOC_COL_XS, TOC_COL_W = [Inches(3.35), Inches(8.33)], Inches(4.45)
+        RULE_BOT_Y, FOOT_Y = Inches(7.10), Inches(7.15)
+        COVER_ART = (6.78, 0.75, 3, 3, 2.0)
 
 
 apply_orientation(False)
 
 
-def _set_font(run, size, bold=False, color=TEXT):
-    run.font.name = FONT
+def _set_font(run, size, bold=False, color=TEXT, face=None, tracking=None):
+    """face: None(본문) / "semi"(제목·강조) / "light"(큰 숫자). 굵게는 SemiBold 가 있으면
+    그것으로 대신한다 — 700 굵기보다 가벼워 정돈돼 보인다. tracking 은 자간(pt)."""
+    name, b = FONT, bold
+    if face == "light" and FONT_LIGHT:
+        name, b = FONT_LIGHT, False
+    elif (face == "semi" or bold) and FONT_SEMI:
+        name, b = FONT_SEMI, False
+    elif face == "semi":
+        b = True
+    run.font.name = name
     run.font.size = Pt(size)
-    run.font.bold = bold
+    run.font.bold = b
     run.font.color.rgb = color
     rPr = run._r.get_or_add_rPr()
     ea = rPr.find(qn("a:ea"))
     if ea is None:
         ea = rPr.makeelement(qn("a:ea"), {})
         rPr.append(ea)
-    ea.set("typeface", FONT)
+    ea.set("typeface", name)
+    if tracking:
+        rPr.set("spc", str(int(tracking * 100)))
 
 
-def add_text(slide, x, y, w, h, wrap=True, anchor=MSO_ANCHOR.TOP):
+def _name(shape, name):
+    """크롬(머리·꼬리·표지·목차)과 장식 도형에 이름표를 단다 — 산출물 검증기가 본문
+    분량·항목 수·넘침을 셀 때 이 요소들을 본문과 구분할 수 있게 한다."""
+    if name:
+        shape.name = name
+    return shape
+
+
+def add_text(slide, x, y, w, h, wrap=True, anchor=MSO_ANCHOR.TOP, name=None):
     box = slide.shapes.add_textbox(x, y, w, h)
+    _name(box, name)
     tf = box.text_frame
     tf.word_wrap = wrap
     tf.vertical_anchor = anchor
@@ -272,7 +347,8 @@ def add_text(slide, x, y, w, h, wrap=True, anchor=MSO_ANCHOR.TOP):
     return tf
 
 
-def set_para(p, segments, size, color=TEXT, bold=False, align=PP_ALIGN.LEFT, space_after=4):
+def set_para(p, segments, size, color=TEXT, bold=False, align=PP_ALIGN.LEFT, space_after=4,
+             face=None, tracking=None):
     """segments: 문자열 또는 (text, bold) 목록."""
     p.alignment = align
     p.space_after = Pt(space_after)
@@ -281,7 +357,7 @@ def set_para(p, segments, size, color=TEXT, bold=False, align=PP_ALIGN.LEFT, spa
     for text, seg_bold in segments:
         r = p.add_run()
         r.text = text
-        _set_font(r, size, bold=bold or seg_bold, color=color)
+        _set_font(r, size, bold=bold or seg_bold, color=color, face=face, tracking=tracking)
     return p
 
 
@@ -290,8 +366,9 @@ def add_para(tf, *args, **kwargs):
     return set_para(p, *args, **kwargs)
 
 
-def add_rect(slide, x, y, w, h, fill, line=None):
-    shp = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, x, y, w, h)
+def add_rect(slide, x, y, w, h, fill, line=None, name=None, shape=MSO_SHAPE.RECTANGLE):
+    shp = slide.shapes.add_shape(shape, x, y, w, h)
+    _name(shp, name)
     shp.fill.solid()
     shp.fill.fore_color.rgb = fill
     if line is None:
@@ -813,10 +890,12 @@ def build_plan(doc, draft_dir, shots_dir):
         toc_items.append(("ch", f"{ch['num']}. {ch['title']}", ch))
         for sec in ch["sections"]:
             toc_items.append(("sec", f"{sec['num']} {sec['title']}", sec))
-    per_col, cols = TOC_PER_COL, TOC_COLS
-    toc_pages = max(1, math.ceil(len(toc_items) / (per_col * cols)))
+    # 목차 쪽 나눔은 렌더와 같은 높이 수식으로 미리 정한다 — 목차가 몇 쪽인지에 따라
+    # 뒤따르는 모든 쪽 번호가 달라지므로, 번호를 매기기 전에 확정해야 한다
+    toc_pages = paginate_toc(toc_items)
 
-    plan = [{"kind": "cover"}] + [{"kind": "contents", "page": i} for i in range(toc_pages)] + screens
+    plan = [{"kind": "cover"}] + [{"kind": "contents", "page": i, "cols": pc}
+                                  for i, pc in enumerate(toc_pages)] + screens
 
     slide_no = {}
     for idx, item in enumerate(plan, start=1):
@@ -830,103 +909,350 @@ def build_plan(doc, draft_dir, shots_dir):
         for sec in item.get("also_secs", []):
             # 제목만 있는 부모 절 — 위임받은 슬라이드 번호를 목차에 표기한다
             slide_no.setdefault(f"sec:{sec['num']}", idx)
-    return plan, toc_items, per_col, cols, slide_no
+    return plan, toc_items, slide_no
 
 
 # ---------- 렌더 ----------
 
-def render_cover(prs, doc, args):
-    slide = prs.slides.add_slide(prs.slide_layouts[6])
-    add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, DARK)
+RUN_HEAD = ""            # 러닝헤더 문구(시스템명 + 매뉴얼 구분) — main 이 표지 문구로 정한다
+
+
+def _manual_kind(audience):
+    """대상 표기에서 매뉴얼 구분을 만든다 — "관리자용" → "관리자 매뉴얼"."""
+    a = (audience or "").strip()
+    if not a:
+        return "사용자 매뉴얼"
+    if "매뉴얼" in a:
+        return a
+    return f"{a[:-1] if a.endswith('용') else a} 매뉴얼"
+
+
+def cover_texts(doc, args):
+    """표지와 러닝헤더가 함께 쓰는 문구 — 시스템명·매뉴얼 구분·대상·버전·날짜·연도."""
     audience, version, date = parse_meta(doc["meta"])
     audience = args.audience or audience or "사용자용"
     version = args.version or version
     date = args.date or date
-    title = args.title or doc["title"] or "사용자 매뉴얼"
-    label = args.cover_label
-
-    # 제목이 "관리자 매뉴얼 — 시스템명" 꼴이면 프로젝트명만 남긴다 — 표지 규격은
-    # [매뉴얼 구분(분리형일 때만)] + [프로젝트명] 이고, 구분 표기는 label 이 담당한다
+    title = (args.title or doc["title"] or "").strip()
+    kind = None
+    # "관리자 매뉴얼 — 시스템명" 꼴: 앞은 매뉴얼 구분, 뒤는 시스템명
     m = re.match(r"^(.{0,20}매뉴얼)\s*[—\-–:]\s*(.+)$", title)
     if m:
-        title = m.group(2).strip()
-
-    # 세로 위치는 슬라이드 높이 비율로 잡는다 — 가로/세로 어느 방향에서도 같은 균형
-    vh = lambda frac: Inches(SLIDE_H.inches * frac)
-    cover_w = SLIDE_W - Inches(1.6)
-    if label:
-        # 독자 영역별 매뉴얼이 분리된 세트 — 1행 "〈독자〉 매뉴얼", 개행 후 프로젝트명
-        tf = add_text(slide, Inches(0.8), vh(0.245), cover_w, Inches(0.5))
-        add_para(tf, label, 20, color=DARK_SOFT, align=PP_ALIGN.CENTER)
-    tf = add_text(slide, Inches(0.8), vh(0.32), cover_w, Inches(1.2), anchor=MSO_ANCHOR.MIDDLE)
-    add_para(tf, title, 34, color=WHITE, bold=True, align=PP_ALIGN.CENTER)
-    if not label:
-        # 단일 매뉴얼 — 프로젝트명만 크게, 아래에 대상 부제
-        tf = add_text(slide, Inches(0.8), vh(0.493), cover_w, Inches(0.6))
-        add_para(tf, f"{audience} 사용자 매뉴얼" if "매뉴얼" not in audience else audience,
-                 16, color=DARK_SOFT, align=PP_ALIGN.CENTER)
-    add_rect(slide, 0, vh(0.653), SLIDE_W, Pt(3), ACCENT_ON_DARK)  # 어두운 표지 위 — 원색 유지
-    meta_line = " · ".join(v for v in (audience, f"버전 {version}" if version else "", date) if v)
-    tf = add_text(slide, Inches(0.8), vh(0.707), cover_w, Inches(0.5))
-    add_para(tf, meta_line, 12, color=DARK_SOFTER, align=PP_ALIGN.CENTER)
+        kind, title = m.group(1).strip(), m.group(2).strip()
+    else:
+        # "시스템명 관리자 매뉴얼" 꼴: 끝의 "(구분) 매뉴얼" 을 떼어 낸다
+        m = re.match(r"^(.+?)\s+((?:\S+\s+)?매뉴얼)$", title)
+        if m:
+            title, kind = m.group(1).strip(), m.group(2).strip()
+        elif title.endswith("매뉴얼"):
+            title, kind = "", title
+    y = re.search(r"(?:19|20)\d{2}", date or "")
+    return {"system": title, "kind": args.cover_label or kind or _manual_kind(audience),
+            "audience": audience, "version": version, "date": date,
+            "year": y.group(0) if y else ""}
 
 
-def render_contents(prs, page_idx, toc_items, per_col, cols, slide_no):
+# --- 도형 --------------------------------------------------------------------
+# 표지·간지의 장식은 코드로 그린 기하 도형이다(이미지 자산 없음). 원호는 짧은 선분으로
+# 근사한 자유형으로 그린다 — 곡선 도형(파이·호)은 경계 상자가 보이는 모양보다 커서
+# 페이지 밖으로 나간 것처럼 잡히지만, 자유형은 경계 상자가 보이는 모양과 같다.
+
+def _art_colors():
+    h, _l, s = _hex_hls(f"{ACCENT_ART}")
+    return {"dark": DARK, "accent": ACCENT_ART, "mid": TINT_MID, "light": TINT_RULE,
+            "faint": _rgb(_hls_hex(h, 0.90, min(s, 0.42)))}
+
+
+def _freeform(slide, pts, fill):
+    E = 914400
+    fb = slide.shapes.build_freeform(round(pts[0][0] * E), round(pts[0][1] * E), scale=1.0)
+    fb.add_line_segments([(round(x * E), round(y * E)) for x, y in pts[1:]], close=True)
+    shp = fb.convert_to_shape()
+    shp.name = "mg-art"
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = fill
+    shp.line.fill.background()
+    shp.shadow.inherit = False
+    return shp
+
+
+def _arc(cx, cy, r, a0, a1, n=40):
+    """중심·반지름·각도(도, 화면 좌표라 90° 가 아래)로 원호 위 점들을 만든다."""
+    return [(cx + r * math.cos(math.radians(a0 + (a1 - a0) * i / n)),
+             cy + r * math.sin(math.radians(a0 + (a1 - a0) * i / n))) for i in range(n + 1)]
+
+
+# 모서리 중심 → 칸 안쪽을 향하는 사분원의 각도 범위
+_QUAD = {"tl": (0, 90), "tr": (90, 180), "br": (180, 270), "bl": (270, 360)}
+
+
+def _tile(slide, kind, x, y, s, color):
+    """도형 격자 한 칸(x, y, 한 변 s — 단위 in).
+    q-XX  모서리 XX 를 중심으로 한 사분원(칸을 채움)   ring-XX  같은 자리의 사분 고리
+    h-X   X 변에 붙은 반원(l·r·t·b)                    c  칸에 꽉 찬 원   dot  작은 원"""
+    corner = {"tl": (x, y), "tr": (x + s, y), "bl": (x, y + s), "br": (x + s, y + s)}
+    if kind.startswith("q-"):
+        cx, cy = corner[kind[2:]]
+        return _freeform(slide, [(cx, cy)] + _arc(cx, cy, s, *_QUAD[kind[2:]]), color)
+    if kind.startswith("ring-"):
+        cx, cy = corner[kind[5:]]
+        a0, a1 = _QUAD[kind[5:]]
+        return _freeform(slide, _arc(cx, cy, s, a0, a1) + _arc(cx, cy, s * 0.52, a1, a0), color)
+    if kind.startswith("h-"):
+        side = kind[2:]
+        cx, cy, a0 = {"l": (x, y + s / 2, -90), "r": (x + s, y + s / 2, 90),
+                      "t": (x + s / 2, y, 0), "b": (x + s / 2, y + s, 180)}[side]
+        return _freeform(slide, _arc(cx, cy, s / 2, a0, a0 + 180), color)
+    if kind in ("c", "dot"):
+        d = s if kind == "c" else s * 0.34
+        off = (s - d) / 2
+        shp = add_rect(slide, Inches(x + off), Inches(y + off), Inches(d), Inches(d), color,
+                       name="mg-art", shape=MSO_SHAPE.OVAL)
+        return shp
+    raise ValueError(kind)
+
+
+# 표지 격자 구성(열, 행, 모양, 색) — 3x3. 짙은색·강조색·중간·옅은 톤을 고르게 흩어
+# 무게가 한쪽으로 쏠리지 않게 하고, 빈칸 하나로 숨 쉴 자리를 둔다.
+COVER_TILES = [
+    (0, 0, "q-br", "mid"),   (1, 0, "c", "accent"),     (2, 0, "ring-bl", "dark"),
+    (0, 1, "h-r", "dark"),   (1, 1, "q-tl", "light"),   (2, 1, "dot", "accent"),
+    (0, 2, "ring-tr", "light"), (1, 2, "h-t", "mid"),   (2, 2, "q-tl", "accent"),
+]
+
+
+def draw_cover_art(slide):
+    ax, ay, cols, rows, s = COVER_ART
+    colors = _art_colors()
+    for c, r, kind, key in COVER_TILES:
+        if c < cols and r < rows:
+            _tile(slide, kind, ax + c * s, ay + r * s, s, colors[key])
+
+
+# --- 표지 --------------------------------------------------------------------
+
+def render_cover(prs, doc, args):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    tf = add_text(slide, Inches(0.7), Inches(0.5), Inches(6), Inches(0.7))
-    add_para(tf, "CONTENTS", 26, color=DARK, bold=True)
-    add_rect(slide, Inches(0.72), Inches(1.25), Inches(1.6), Pt(2.5), ACCENT)
+    t = cover_texts(doc, args)
+    draw_cover_art(slide)
+    ax, ay, cols, rows, s = COVER_ART
+    if PORTRAIT:
+        tx, tw, y0 = BODY_X, BODY_W, ay + rows * s + 0.42
+        meta_y = SLIDE_H.inches - 0.78
+    else:
+        tx, tw, y0 = Inches(0.75), Inches(5.5), 2.05
+        meta_y = SLIDE_H.inches - 0.78
 
-    start = page_idx * per_col * cols
-    chunk = toc_items[start:start + per_col * cols]
-    col_w = TOC_COL_W
-    # 마지막(오버플로) 페이지에서 좌측 컬럼에만 몰리지 않도록 좌우 균등 분배
-    half = max(1, math.ceil(len(chunk) / cols))
-    for c in range(cols):
-        col_items = chunk[c * half:(c + 1) * half]
-        if not col_items:
-            break
-        tf = add_text(slide, Inches(0.72) + c * (col_w + Inches(0.3)), Inches(1.6), col_w,
-                      SLIDE_H - Inches(2.1))
-        for kind, label, ref in col_items:
-            key = f"ch:{ref['num']}" if kind == "ch" else f"sec:{ref['num']}"
-            no = slide_no.get(key, "")
-            if kind == "ch":
-                add_para(tf, [(f"{label}", True), (f"   ····  {no}", False)], 14,
-                         color=DARK, space_after=6)
-            else:
-                add_para(tf, [(f"{label}", False), (f"   ····  {no}", False)], 11.5,
-                         color=TEXT, space_after=5)
+    # 대상 알약 라벨
+    pill_w = Inches(0.36 + 0.155 * len(t["audience"]))
+    pill = add_rect(slide, tx, Inches(y0), pill_w, Inches(0.30), TINT_SOFT,
+                    name="mg-chrome-cover", shape=MSO_SHAPE.ROUNDED_RECTANGLE)
+    pill.adjustments[0] = 0.5
+    ptf = pill.text_frame
+    ptf.margin_left = ptf.margin_right = ptf.margin_top = ptf.margin_bottom = 0
+    ptf.vertical_anchor = MSO_ANCHOR.MIDDLE
+    ptf.word_wrap = False
+    add_para(ptf, t["audience"], 10, color=ACCENT, face="semi", align=PP_ALIGN.CENTER, space_after=0)
 
+    # 시스템명(강조색) → 매뉴얼 구분(짙은색, 크게)
+    system = t["system"]
+    if system:
+        size = 26 if len(system) <= 16 else max(17, 26 - (len(system) - 16) * 0.6)
+        tf = add_text(slide, tx, Inches(y0 + 0.44), tw, Inches(0.6), name="mg-chrome-cover")
+        add_para(tf, system, size, color=ACCENT, face="semi", space_after=0)
+    tf = add_text(slide, tx, Inches(y0 + (1.0 if system else 0.44)), tw, Inches(0.85),
+                  name="mg-chrome-cover")
+    add_para(tf, t["kind"], 40, color=DARK, face="semi", space_after=0)
+
+    # 아래 — 가는 선 + 버전·날짜
+    add_rect(slide, tx, Inches(meta_y), tw, Pt(0.75), LINE_GRAY, name="mg-chrome-cover")
+    meta = "   ·   ".join(v for v in (f"버전 {t['version']}" if t["version"] else "", t["date"]) if v)
+    tf = add_text(slide, tx, Inches(meta_y + 0.10), tw, Inches(0.3), name="mg-chrome-cover")
+    add_para(tf, meta or " ", 9, color=MUTED, tracking=1)
+
+
+# --- 목차 --------------------------------------------------------------------
+# 좌측에 "목차" 제목, 우측 컬럼에 장 블록(가는 선 · CHAPTER 라벨 · 장 제목 · 쪽)과
+# 절(하위 절은 들여쓰기) 목록. 쪽 나눔은 렌더와 같은 높이 수식으로 미리 계산한다.
+
+TOC_NUM_W = 0.55          # 쪽 번호 칸(in)
+TOC_SUB_INDENT = 0.22     # 하위 절 들여쓰기(in)
+
+
+def _toc_depth(ref):
+    return ref["num"].count(".")
+
+
+def _toc_lines(label, size, width_in):
+    return text_lines(label, max(8, int(width_in * 72 / size) - 1))
+
+
+def _toc_h(entry, first):
+    """목차 항목 하나의 높이(in) — render_contents 와 반드시 같은 수식이어야 한다."""
+    w = TOC_COL_W.inches - TOC_NUM_W
+    if entry["kind"] in ("ch", "cont"):
+        title = entry["ref"]["title"]
+        return (0 if first else 0.16) + 0.12 + 0.21 + 0.37 * _toc_lines(title, 13.5, w) + 0.10
+    if _toc_depth(entry["ref"]) >= 2:
+        return 0.255 * _toc_lines(entry["label"], 9.5, w - TOC_SUB_INDENT)
+    return 0.29 * _toc_lines(entry["label"], 10.5, w)
+
+
+def paginate_toc(toc_items):
+    """목차 항목을 [쪽][컬럼][항목] 으로 나눈다. 장 머리만 컬럼 끝에 매달리지 않게 첫 절과
+    함께 옮기고, 장 중간에서 컬럼이 바뀌면 새 컬럼 맨 위에 '계속' 장 머리를 다시 단다
+    (어느 장의 절인지 잃지 않게)."""
+    cap = TEXT_BOTTOM.inches - TOC_TOP.inches
+    cols, cur, used, cur_ch = [], [], 0.0, None
+
+    def flush():
+        nonlocal cur, used
+        if cur:
+            cols.append(cur)
+        cur, used = [], 0.0
+
+    for i, (kind, label, ref) in enumerate(toc_items):
+        if kind == "ch":
+            e = {"kind": "ch", "label": label, "ref": ref}
+            cur_ch = ref
+            nxt = toc_items[i + 1] if i + 1 < len(toc_items) and toc_items[i + 1][0] == "sec" else None
+            need = _toc_h(e, not cur) + (_toc_h({"kind": "sec", "label": nxt[1], "ref": nxt[2]}, False)
+                                         if nxt else 0)
+            if cur and used + need > cap:
+                flush()
+            used += _toc_h(e, not cur)
+            cur.append(e)
+        else:
+            e = {"kind": "sec", "label": label, "ref": ref}
+            h = _toc_h(e, False)
+            if cur and used + h > cap:
+                flush()
+                if cur_ch is not None:
+                    c = {"kind": "cont", "label": "", "ref": cur_ch}
+                    used += _toc_h(c, True)
+                    cur.append(c)
+            used += h
+            cur.append(e)
+    flush()
+    n = len(TOC_COL_XS)
+    return [cols[k:k + n] for k in range(0, len(cols), n)] or [[]]
+
+
+def render_running_head(slide, right=""):
+    """러닝헤더(좌: 시스템명·매뉴얼 구분, 우: 장) + 위 가는 선."""
+    half = int(BODY_W * 0.62)
+    tf = add_text(slide, BODY_X, HEAD_RUN_Y, half, Inches(0.2), name="mg-chrome-head")
+    add_para(tf, RUN_HEAD or " ", 8, color=MUTED, space_after=0, tracking=0.3)
+    if right:
+        w = int(BODY_W * 0.5)
+        tf = add_text(slide, BODY_X + BODY_W - w, HEAD_RUN_Y, w, Inches(0.2), name="mg-chrome-head")
+        add_para(tf, right, 8, color=MUTED, align=PP_ALIGN.RIGHT, space_after=0)
+    add_rect(slide, BODY_X, RULE_TOP_Y, BODY_W, Pt(0.75), TINT_RULE, name="mg-chrome-rule")
+
+
+def render_contents(prs, page_cols, slide_no):
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    render_running_head(slide)
+    tf = add_text(slide, BODY_X, Inches(0.84), Inches(1.7), Inches(0.5), name="mg-chrome-toc")
+    add_para(tf, "목차", 24, color=DARK, face="semi", space_after=0)
+    tf = add_text(slide, BODY_X, Inches(1.36), Inches(1.7), Inches(0.22), name="mg-chrome-toc")
+    add_para(tf, "CONTENTS", 8, color=ACCENT, face="semi", tracking=2, space_after=0)
+
+    title_w = TOC_COL_W.inches - TOC_NUM_W
+    for ci, col in enumerate(page_cols):
+        x0 = TOC_COL_XS[ci].inches
+        y = TOC_TOP.inches
+        for j, e in enumerate(col):
+            ref = e["ref"]
+            if e["kind"] in ("ch", "cont"):
+                if j:
+                    y += 0.16
+                add_rect(slide, Inches(x0), Inches(y), TOC_COL_W, Pt(0.75), LINE_GRAY, name="mg-chrome-toc")
+                y += 0.12
+                label = f"CHAPTER {ref['num']}" + ("  ·  계속" if e["kind"] == "cont" else "")
+                tf = add_text(slide, Inches(x0), Inches(y), Inches(title_w), Inches(0.2), name="mg-chrome-toc")
+                add_para(tf, label, 7.5, color=ACCENT, face="semi", tracking=1.5, space_after=0)
+                y += 0.21
+                n = _toc_lines(ref["title"], 13.5, title_w)
+                tf = add_text(slide, Inches(x0), Inches(y), Inches(title_w), Inches(0.37 * n), name="mg-chrome-toc")
+                add_para(tf, ref["title"], 13.5, color=DARK if e["kind"] == "ch" else MUTED,
+                         face="semi", space_after=0)
+                if e["kind"] == "ch":
+                    no = slide_no.get(f"ch:{ref['num']}", "")
+                    tf = add_text(slide, Inches(x0 + title_w), Inches(y), Inches(TOC_NUM_W), Inches(0.37),
+                                  name="mg-chrome-toc")
+                    add_para(tf, f"{no:02d}" if isinstance(no, int) else str(no), 11, color=DARK,
+                             face="semi", align=PP_ALIGN.RIGHT, space_after=0)
+                y += 0.37 * n + 0.10
+                continue
+            sub = _toc_depth(ref) >= 2
+            size, row_h = (9.5, 0.255) if sub else (10.5, 0.29)
+            indent = TOC_SUB_INDENT if sub else 0.0
+            n = _toc_lines(e["label"], size, title_w - indent)
+            tf = add_text(slide, Inches(x0 + indent), Inches(y), Inches(title_w - indent), Inches(row_h * n),
+                          name="mg-chrome-toc")
+            add_para(tf, e["label"], size, color=MUTED if sub else TEXT, space_after=0)
+            no = slide_no.get(f"sec:{ref['num']}", "")
+            tf = add_text(slide, Inches(x0 + title_w), Inches(y), Inches(TOC_NUM_W), Inches(row_h),
+                          name="mg-chrome-toc")
+            add_para(tf, f"{no:02d}" if isinstance(no, int) else str(no), size, color=MUTED,
+                     align=PP_ALIGN.RIGHT, space_after=0)
+            y += row_h * n
+
+
+# --- 간지 --------------------------------------------------------------------
 
 def render_divider(prs, ch):
     slide = prs.slides.add_slide(prs.slide_layouts[6])
-    add_rect(slide, 0, 0, SLIDE_W, SLIDE_H, DARK)
-    vh = lambda frac: Inches(SLIDE_H.inches * frac)
-    tf = add_text(slide, Inches(1.0), vh(0.36), SLIDE_W - Inches(2.0), Inches(1.4))
-    add_para(tf, f"{ch['num']}.", 52, color=ACCENT_ON_DARK, bold=True)  # 어두운 간지 위
-    tf = add_text(slide, Inches(1.0), vh(0.533), SLIDE_W - Inches(2.0), Inches(1.0))
-    add_para(tf, ch["title"], 30, color=WHITE, bold=True)
+    colors = _art_colors()
+    # 표지와 같은 도형 언어 — 우하단 모서리의 사분원과 작은 원
+    s = 3.1 if PORTRAIT else 2.7
+    _tile(slide, "q-br", SLIDE_W.inches - s, SLIDE_H.inches - s, s, colors["faint"])
+    _tile(slide, "dot", SLIDE_W.inches - s - 0.55, SLIDE_H.inches - s - 0.55, 1.1, colors["accent"])
 
+    x, w = BODY_X, SLIDE_W - BODY_X * 2
+    top = SLIDE_H.inches * (0.29 if PORTRAIT else 0.20)
+    tf = add_text(slide, x, Inches(top), w, Inches(0.25), name="mg-chrome-div")
+    add_para(tf, "CHAPTER", 10, color=ACCENT, face="semi", tracking=3, space_after=0)
+    tf = add_text(slide, x, Inches(top + 0.22), w, Inches(1.45), name="mg-chrome-div")
+    add_para(tf, ch["num"], 96, color=ACCENT_ART, face="light", space_after=0)
+    tf = add_text(slide, x, Inches(top + 1.72), w, Inches(0.7), name="mg-chrome-div")
+    add_para(tf, ch["title"], 30, color=DARK, face="semi", space_after=0)
+    add_rect(slide, x, Inches(top + 2.52), Inches(0.8), Pt(2.25), ACCENT_ART, name="mg-chrome-div")
+
+    # 이 장에서 다루는 절 — 독자가 장의 범위를 먼저 본다(하위 절은 생략)
+    secs = [sc for sc in ch["sections"] if sc["num"].count(".") == 1]
+    limit = 10 if PORTRAIT else 7
+    shown = secs[:limit]
+    if shown:
+        tf = add_text(slide, x, Inches(top + 2.78), Inches(4.2), Inches(0.3 * (len(shown) + 1)),
+                      name="mg-chrome-div")
+        for sc in shown:
+            add_para(tf, f"{sc['num']}   {sc['title']}", 11, color=MUTED, space_after=5)
+        if len(secs) > limit:
+            add_para(tf, f"외 {len(secs) - limit}개 절", 10, color=MUTED, space_after=0)
+
+
+# --- 본문 머리·꼬리 ------------------------------------------------------------
 
 def render_header(slide, ch, sec, part, right_label=True):
-    add_rect(slide, 0, 0, SLIDE_W, Inches(1.0), DARK)
+    """러닝헤더 + 가는 선 + 절 제목(번호는 강조색). 본문은 1.2in 에서 시작한다."""
+    render_running_head(slide, f"{ch['num']}  {ch['title']}" if right_label else "")
     suffix = f" ({part[0]}/{part[1]})" if part[1] > 1 else ""
-    # 세로형은 폭이 좁아 제목 폭을 우측 장 라벨과 겹치지 않게 줄인다
-    title_w = SLIDE_W - Inches(3.4) if PORTRAIT else Inches(9.2)
-    tf = add_text(slide, Inches(0.55), Inches(0.18), title_w, Inches(0.7), anchor=MSO_ANCHOR.MIDDLE)
+    tf = add_text(slide, BODY_X, TITLE_Y, BODY_W, TITLE_H, anchor=MSO_ANCHOR.MIDDLE,
+                  name="mg-chrome-title")
     p = tf.paragraphs[0]
-    set_para(p, [(f"{sec['num']}  ", False), (sec["title"] + suffix, True)], 20, color=WHITE)
-    p.runs[0].font.color.rgb = HEAD_NUM
-    if right_label:
-        label_w = Inches(2.35) if PORTRAIT else Inches(3.3)
-        tf = add_text(slide, SLIDE_W - label_w - Inches(0.43), Inches(0.33), label_w, Inches(0.4))
-        add_para(tf, f"{ch['num']}. {ch['title']}", 11, color=DARK_SOFT, align=PP_ALIGN.RIGHT)
+    set_para(p, [(f"{sec['num']}", False), (f"   {sec['title']}{suffix}", False)], 18,
+             color=DARK, face="semi", space_after=0)
+    p.runs[0].font.color.rgb = ACCENT
 
 
 def render_page_no(slide, no):
-    tf = add_text(slide, SLIDE_W - Inches(0.78), SLIDE_H - Inches(0.45), Inches(0.6), Inches(0.35))
-    add_para(tf, str(no), 10, color=MUTED, align=PP_ALIGN.RIGHT)
+    """꼬리 — 아래 가는 선 + 쪽 번호(두 자리)."""
+    add_rect(slide, BODY_X, RULE_BOT_Y, BODY_W, Pt(0.75), TINT_RULE, name="mg-chrome-rule")
+    tf = add_text(slide, BODY_X + BODY_W - Inches(0.8), FOOT_Y, Inches(0.8), Inches(0.24),
+                  name="mg-chrome-foot")
+    add_para(tf, f"{no:02d}", 9, color=MUTED, align=PP_ALIGN.RIGHT, space_after=0, tracking=0.5)
 
 
 def apply_picture_border(pic):
@@ -988,14 +1314,62 @@ def render_combined(prs, item, page_no):
         y = render_sec_stack(slide, sec, y) + STACK_GAP
 
 
+# 표 스타일 "No Style, No Grid" — 기본 표 스타일은 Office 테마의 파랑 머리·줄무늬를 입혀
+# 매뉴얼 테마색과 따로 놀았다. 스타일을 비우고 채우기·선을 직접 지정한다.
+_NO_STYLE_NO_GRID = "{2D5ABB26-0587-4C30-8999-92F81FD0307C}"
+_CELL_LINES = ("a:lnL", "a:lnR", "a:lnT", "a:lnB")
+
+
+def _cell_line(cell, tag, color=None, w_pt=0.75):
+    """셀 테두리 한 변 — color 가 None 이면 선 없음. 스키마 순서(lnL·lnR·lnT·lnB → 채우기)를
+    지켜야 PowerPoint 가 파일을 '복구'하지 않으므로, 앞선 선 요소 바로 뒤에 끼워 넣는다."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    old = tcPr.find(qn(tag))
+    if old is not None:
+        tcPr.remove(old)
+    ln = tcPr.makeelement(qn(tag), {"w": str(int(w_pt * 12700)), "cap": "flat",
+                                    "cmpd": "sng", "algn": "ctr"})
+    if color is not None:
+        sf = ln.makeelement(qn("a:solidFill"), {})
+        sf.append(sf.makeelement(qn("a:srgbClr"), {"val": str(color)}))
+        ln.append(sf)
+        ln.append(ln.makeelement(qn("a:prstDash"), {"val": "solid"}))
+    else:
+        ln.append(ln.makeelement(qn("a:noFill"), {}))
+    before = {qn(t) for t in _CELL_LINES[:_CELL_LINES.index(tag)]}
+    at = 0
+    for i, child in enumerate(list(tcPr)):
+        if child.tag in before:
+            at = i + 1
+    tcPr.insert(at, ln)
+
+
 def render_table(slide, rows, x, y, w):
     n_rows, n_cols = len(rows), max(len(r) for r in rows)
     height = Inches(0.35) * n_rows
     shape = slide.shapes.add_table(n_rows, n_cols, x, y, w, height)
     table = shape.table
+    tblPr = shape._element.graphic.graphicData.tbl.tblPr
+    sid = tblPr.find(qn("a:tableStyleId"))
+    if sid is None:
+        sid = tblPr.makeelement(qn("a:tableStyleId"), {})
+        tblPr.append(sid)
+    sid.text = _NO_STYLE_NO_GRID
+    table.first_row, table.horz_banding = True, False
+    # 셀 여백·글자 크기(11pt)는 표 높이 보정(tools/)의 전제이므로 바꾸지 않는다
     for ri, row in enumerate(rows):
+        last = ri == n_rows - 1
         for ci in range(n_cols):
             cell = table.cell(ri, ci)
+            # 선 먼저, 채우기 나중(스키마 순서) — 세로선 없이 가로 구분선만 둔다
+            _cell_line(cell, "a:lnL")
+            _cell_line(cell, "a:lnR")
+            _cell_line(cell, "a:lnT", TINT_RULE if ri == 0 else None)
+            _cell_line(cell, "a:lnB", TINT_RULE if (ri == 0 or last) else LINE_GRAY,
+                       0.75 if (ri == 0 or last) else 0.5)
+            if ri == 0:
+                cell.fill.solid()
+                cell.fill.fore_color.rgb = TINT_SOFT
             cell.text = row[ci] if ci < len(row) else ""
             for p in cell.text_frame.paragraphs:
                 for r in p.runs:
@@ -1147,6 +1521,8 @@ def self_check(prs, combined_idx=frozenset()):
         # 텍스트 프레임 이탈 — 표·개요가 길어 본문이 밀리면 내용이 페이지 밖으로 사라진다.
         # 산출물 검증(verify_pptx)과 같은 규칙을 빌드 시점에도 두어 즉시 드러나게 한다.
         for shape in slide.shapes:
+            if shape.name.startswith("mg-art"):
+                continue          # 장식 도형 — 페이지 모서리에 맞닿게 그린 것이라 대상 아님
             if (getattr(shape, "has_text_frame", False) and shape.top is not None
                     and shape.height is not None and shape.top + shape.height > SLIDE_H):
                 over = (shape.top + shape.height - SLIDE_H) / 914400
@@ -1186,14 +1562,23 @@ def main():
                     help="참고 템플릿 pptx 에서 색 테마(dark·accent)를 추출해 적용 — "
                          "레이아웃·규격은 번들 그대로(서식 복제 아님). 추출 실패 시 --theme 폴백")
     ap.add_argument("--cover-label",
-                    help='표지 1행 매뉴얼 구분 표기(예: "관리자 매뉴얼") — 독자 영역별로 '
-                         "매뉴얼이 분리된 세트일 때만 지정. 지정 시 표지가 [구분]+[프로젝트명] "
-                         "2행이 되고, 미지정 시 프로젝트명만 표기한다")
+                    help='매뉴얼 구분 표기(예: "관리자 매뉴얼") — 표지 큰 제목과 러닝헤더에 쓴다. '
+                         "미지정 시 원고 제목('관리자 매뉴얼 — 시스템명')이나 대상(관리자용 → "
+                         "관리자 매뉴얼)에서 만든다")
+    ap.add_argument("--font", choices=["auto", "pretendard", "malgun"], default="auto",
+                    help="글꼴: auto=Pretendard 가 설치돼 있으면 사용, 없으면 맑은 고딕(기본) / "
+                         "malgun=어느 Windows PC 에서 열어도 같게 보여야 할 때")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 
     apply_orientation(args.orientation == "portrait")
     apply_theme(args.theme)
+    font = select_fonts(args.font)
+    if font == "Pretendard":
+        print("[build_pptx] 글꼴: Pretendard — PDF 는 글꼴이 포함되지만, pptx 를 Pretendard 가 없는 "
+              "PC 에서 열면 다른 글꼴로 보입니다(같게 보여야 하면 --font malgun)")
+    else:
+        print(f"[build_pptx] 글꼴: {font}")
     if args.theme_from:
         got = theme_from_template(args.theme_from)
         if got:
@@ -1231,7 +1616,11 @@ def main():
         for sec in ch["sections"]:
             ch_of[sec["num"]] = ch
 
-    plan, toc_items, per_col, cols, slide_no = build_plan(doc, draft_dir, shots_dir)
+    plan, toc_items, slide_no = build_plan(doc, draft_dir, shots_dir)
+
+    global RUN_HEAD
+    ct = cover_texts(doc, args)
+    RUN_HEAD = "  ".join(v for v in (ct["system"], ct["kind"]) if v)
 
     prs = Presentation()
     prs.slide_width, prs.slide_height = SLIDE_W, SLIDE_H
@@ -1239,7 +1628,7 @@ def main():
         if item["kind"] == "cover":
             render_cover(prs, doc, args)
         elif item["kind"] == "contents":
-            render_contents(prs, item["page"], toc_items, per_col, cols, slide_no)
+            render_contents(prs, item["cols"], slide_no)
             render_page_no(prs.slides[-1], idx)
         elif item["kind"] == "divider":
             render_divider(prs, item["ch"])

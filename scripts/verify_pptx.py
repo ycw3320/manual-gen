@@ -10,8 +10,11 @@ skill/자작 빌더) 경로는 규격(output-formats.md)을 우회해도 잡는 
   ERROR — 마크다운 잔재(**, ![), 스크린샷 검은 테두리 누락, 이미지 비율 왜곡(>3%),
           (--draft) 원고 이미지 소실
   WARN  — 세로형 렌더 폭 편차(>3%), 슬라이드당 항목 6개 초과, 설명이 지나치게 적은
-          컷(본문 170자 미만), 텍스트 프레임의 슬라이드 이탈, 그림 있는 슬라이드의
-          [사진 N] 캡션 부재, 미확정 마킹 잔존, (--draft) placeholder 잔존 불일치
+          컷(본문 155자 미만 — 긴 캡처의 조각 컷은 제외), 텍스트 프레임의 슬라이드 이탈,
+          그림 있는 슬라이드의 [사진 N] 캡션 부재, 미확정 마킹 잔존,
+          (--draft) placeholder 잔존 불일치
+  번들 빌더가 이름표(mg-chrome·mg-art)를 단 머리·꼬리·표지·목차·장식은 본문 분량·
+  항목 수·절 제목 수 집계에서 뺀다.
 
 사용 예:
   python verify_pptx.py 관리자매뉴얼_시스템명_20260724.pptx \
@@ -42,6 +45,8 @@ except ImportError:
 MAX_ITEMS = 6
 UNRESOLVED_RE = re.compile(r"확인 필요|확정 전|TBD|미정")
 PHOTO_RE = re.compile(r"\[사진\s*[\d-]+\]")
+# 긴 캡처를 가로 띠로 나눈 조각 컷의 캡션 — "[사진 2] 대시보드 (2/3)"
+BAND_CAP_RE = re.compile(r"\[사진\s*[\d-]+\].*\(\d+/\d+\)\s*$")
 
 
 def has_border(pic):
@@ -100,7 +105,8 @@ def walk_shapes(shapes, scale=1.0):
         yield sh, scale
 
 
-SPARSE_CHARS = 170     # 이보다 짧은 화면 컷은 '설명이 너무 적다'로 본다
+SPARSE_CHARS = 155     # 이보다 짧은 화면 컷은 '설명이 너무 적다'로 본다 — 머리·꼬리(러닝헤더·
+                       # 장 이름·쪽 번호, 약 15자)를 본문에서 빼고 세게 되면서 170 에서 옮겼다
 
 
 def verify(path, draft=None, shots_dir=None):
@@ -120,6 +126,7 @@ def verify(path, draft=None, shots_dir=None):
         sec_titles = 0            # 한 장에 절 소제목이 여럿 = 개요 병합 장표
         slide_has_pic = False
         slide_has_caption = False
+        slide_is_band = False
         for shape, sc in walk_shapes(slide.shapes):
             if getattr(shape, "shape_type", None) == 13:  # PICTURE
                 n_pics += 1
@@ -138,15 +145,22 @@ def verify(path, draft=None, shots_dir=None):
                                       "— 폭·높이 강제 지정(비율 유지 위반)")
             if not shape.has_text_frame:
                 continue
+            # 번들 빌더는 머리·꼬리·표지·목차·장식에 mg-chrome/mg-art 이름표를 단다 — 러닝헤더·
+            # 쪽 번호 같은 글자가 본문 분량·항목 수·절 제목 수에 섞이면 게이트가 무뎌진다
+            chrome = shape.name.startswith(("mg-chrome", "mg-art"))
             for p in shape.text_frame.paragraphs:
                 text = "".join(r.text for r in p.runs)
                 if "**" in text or "![" in text:
                     errors.append(f"슬라이드 {idx}: 마크다운 잔재 — {text[:40]}")
                 if PHOTO_RE.search(text):
                     slide_has_caption = True
+                    if BAND_CAP_RE.search(text.strip()):
+                        slide_is_band = True
                 if "이미지 파일 누락" in text:
                     errors.append(f"슬라이드 {idx}: 작업 메모가 본문에 유출 — '{text.strip()[:40]}' "
                                   "(캡처 미확보 화면은 placeholder 규약으로 표기할 것)")
+                if chrome:
+                    continue
                 stripped = text.strip()
                 first = stripped[:1]
                 if SEC_NO_RE.match(stripped) and len(stripped) < 40:
@@ -163,9 +177,12 @@ def verify(path, draft=None, shots_dir=None):
             warns.append(f"슬라이드 {idx}: 그림은 있는데 [사진 N] 캡션이 없습니다")
         # 설명이 지나치게 적은 컷 — 분할이 과하면 쪽마다 한두 줄만 남고 아래가 빈다.
         # 화면 슬라이드(그림 있음)만 대상으로 하고, 절의 마지막 컷은 ※만 실릴 수 있어 제외.
-        if slide_has_pic and item_count and body_chars < SPARSE_CHARS:
+        # 긴 캡처의 조각 컷은 제외 — 조각마다 그림이 다르므로 설명이 짧아도 과분할이 아니다
+        if slide_has_pic and item_count and body_chars < SPARSE_CHARS and not slide_is_band:
             sparse_slides.append((idx, item_count, body_chars))
         for sh in slide.shapes:
+            if sh.name.startswith("mg-art"):
+                continue          # 장식 도형 — 페이지 모서리에 맞닿게 그린 것이라 대상 아님
             if getattr(sh, "has_text_frame", False) and sh.top is not None and sh.height is not None:
                 if sh.top + sh.height > slide_h:
                     overflow_slides.append(idx)

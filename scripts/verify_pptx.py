@@ -129,6 +129,8 @@ def verify(path, draft=None, shots_dir=None):
         slide_is_band = False
         for shape, sc in walk_shapes(slide.shapes):
             if getattr(shape, "shape_type", None) == 13:  # PICTURE
+                if shape.name.startswith(("mg-chrome", "mg-art")):
+                    continue          # 템플릿 장식 그림(로고 등) — 캡처가 아니므로 캡처 규격 대상 아님
                 n_pics += 1
                 slide_has_pic = True
                 pic_widths.append(int(shape.width * sc))   # 그룹 배율 반영한 실제 렌더 폭

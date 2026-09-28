@@ -114,7 +114,9 @@ EN_FIELD_RE = re.compile(
     r"|(?<![A-Za-z])[a-z]+[A-Z][a-zA-Z]*(?![A-Za-z])")
 
 
-def validate(doc, draft_dir, shots_dir, raw_text=""):
+def validate(doc, draft_dir, shots_dir, raw_text="", table_rooms=None):
+    """table_rooms: (첫 쪽, 이어지는 쪽) 표 가용 높이(in). 빌더가 템플릿 등으로 본문
+    영역을 바꿨을 때 넘긴다 — 없으면 번들 세로형 기본 기하를 쓴다."""
     """파싱된 원고를 검증한다. 반환: (errors, warns) — 각 항목은 사람이 읽는 문자열."""
     errors, warns = [], []
 
@@ -159,8 +161,8 @@ def validate(doc, draft_dir, shots_dir, raw_text=""):
             # 읽기 나빠지므로 원고 단계에서 알린다(빌더와 같은 수식 — draft_parser).
             tbs = [b for b in blocks if b["type"] == "table"]
             if tbs:
-                room = table_room()
-                pages = paginate_tables(tbs, room, PORT_TEXT_BOTTOM - PORT_BODY_Y)
+                room, rest = table_rooms or (table_room(), PORT_TEXT_BOTTOM - PORT_BODY_Y)
+                pages = paginate_tables(tbs, room, rest)
                 if len(pages) > 1:
                     n_rows = sum(len(t["rows"]) for t in tbs)
                     cut = _rows_to_cut(tbs, room)

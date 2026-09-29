@@ -13,6 +13,9 @@
 사용:
   python tools/calibrate_table.py --dir <작업폴더>          # 검증만
   python tools/calibrate_table.py --dir <작업폴더> --suggest # 실측에서 계수 재도출
+  python tools/calibrate_table.py --dir <작업폴더> --measure auto
+      # 줄 수를 글꼴 실측 줄바꿈(draft_parser.cell_lines)으로 추정해 검증 — 빌더가 실제 렌더
+      # 검사를 할 수 있을 때 쓰는 방식. 글꼴은 표본을 만든 --font 와 같아야 한다
 
 종료 코드: 0 통과 / 1 과소추정 존재(계수 재보정 필요)
 """
@@ -29,6 +32,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts"))
+import draft_parser as DP                                                # noqa: E402
 from draft_parser import (table_height_est, text_lines, char_units,      # noqa: E402
                           PORT_BODY_W, ROW_LINE_H, ROW_PAD, ROW_MIN_H, ROW_SAFETY)
 
@@ -53,7 +57,7 @@ def real_lines(height_in):
 
 
 def check(meta, by_slide):
-    line_under, row_under, tbl_under = [], [], []
+    line_under, row_under, tbl_under, line_over = [], [], [], []
     row_err, tbl_err = [], []
     for i, m in enumerate(meta, start=1):
         heights = [h for _, h in sorted(by_slide.get(i, []))]
@@ -64,9 +68,11 @@ def check(meta, by_slide):
         rl = real_lines(real_row)
 
         col_ea = max(6, int(PORT_BODY_W / m["ncol"] * 5.9))
-        pl = text_lines(m["text"], col_ea)
+        pl = (DP.cell_lines(m["text"], PORT_BODY_W / m["ncol"]) if DP.table_measure_on()
+              else text_lines(m["text"], col_ea))
         if pl < rl:
             line_under.append((m["kind"], m["ncol"], m["nch"], pl, rl))
+        line_over.append(pl - rl)
 
         pred_row = max(ROW_MIN_H, ROW_LINE_H * pl + ROW_PAD) + ROW_SAFETY
         row_err.append(pred_row - real_row)
@@ -84,9 +90,12 @@ def check(meta, by_slide):
         return (f"중앙값 {e[len(e) // 2]:+.3f}in · 평균 {sum(e) / len(e):+.3f}in · "
                 f"최소 {e[0]:+.3f} · 최대 {e[-1]:+.3f}")
 
-    print(f"표본 {len(row_err)}개\n")
-    print(f"1) 줄 수   과소예측 {len(line_under):>3}건   <-- 0 이어야 통과")
-    for u in line_under[:6]:
+    print(f"표본 {len(row_err)}개 · 줄 수 추정: "
+          + ("글꼴 실측 줄바꿈(cell_lines)" if DP.table_measure_on() else "char_units 가중(넉넉한 추정)") + "\n")
+    over = collections.Counter(line_over)
+    print(f"1) 줄 수   과소예측 {len(line_under):>3}건   <-- 0 이어야 통과   "
+          f"(추정-실제 줄 수 분포: {dict(sorted(over.items()))})")
+    for u in line_under[:12]:
         print(f"     !! {u[0]} {u[1]}열 {u[2]}자: 예측 {u[3]}줄 < 실제 {u[4]}줄")
     print(f"2) 행 높이 과소추정 {len(row_under):>3}건   ({stat(row_err)})")
     for u in row_under[:6]:
@@ -132,7 +141,7 @@ def suggest(meta, by_slide):
     est = collections.defaultdict(list)
     for i, m in enumerate(meta, start=1):
         heights = [h for _, h in sorted(by_slide.get(i, []))]
-        if not heights or m["kind"] == "hangul" or m["nch"] < 20:
+        if not heights or m["kind"] in ("hangul", "real") or m["nch"] < 20:
             continue
         body = heights[1:] or heights
         rl = real_lines(sum(body) / len(body))
@@ -156,7 +165,17 @@ def main():
     ap = argparse.ArgumentParser(description="표 기하 계수 검증·재도출")
     ap.add_argument("--dir", required=True, help="probe_meta.json 과 measured.csv 가 있는 폴더")
     ap.add_argument("--suggest", action="store_true", help="실측에서 계수를 재도출해 제안한다")
+    ap.add_argument("--measure", choices=["auto", "pretendard", "malgun"],
+                    help="줄 수를 이 글꼴의 실측 줄바꿈으로 추정해 검증(표본의 --font 와 같게)")
     args = ap.parse_args()
+    if args.measure:
+        import build_pptx as B
+        B.select_fonts(args.measure)
+        body, head = B.table_measure_fonts()
+        if not DP.set_table_measure(body, head):
+            print("[calibrate] 글꼴 파일·Pillow 를 찾지 못해 실측 줄바꿈을 켤 수 없습니다", file=sys.stderr)
+            sys.exit(1)
+        print(f"[calibrate] 실측 글꼴: {body} / 머리글 {head}")
 
     meta, by_slide = load(args.dir)
     bad = check(meta, by_slide)

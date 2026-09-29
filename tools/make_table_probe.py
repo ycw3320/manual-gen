@@ -40,6 +40,36 @@ ASCII_SAMPLES = {
     "digit":   "0123456789" * 10,
     "mix":     "발송 status 확인 OK, 2026-07-24 처리 완료 " * 4,
 }
+# 실제 매뉴얼 표에 나오는 모양의 문장 — 띄어쓰기·쉼표·가운뎃점·괄호·영문 단어·숫자·긴 URL.
+# 줄바꿈 실측(draft_parser.cell_lines)은 이 표본에서 검증한다(순수 글자 표본만으로는 단어
+# 경계·금칙 처리가 드러나지 않는다).
+REAL_SAMPLES = [
+    "사용 여부",
+    "없음",
+    "1,234건",
+    "읽기 전용",
+    "등록일시 · 수정일시 · 등록자",
+    "YYYY-MM-DD HH:mm 형식으로 표시됩니다.",
+    "Chrome 최신 버전, Microsoft Edge 120 이상",
+    "0.0 °C · 0 % · 0 ppm · 0 AQI",
+    "알림 수신 여부를 선택합니다(기본값: 수신).",
+    "관리자 계정으로 로그인한 경우에만 표시됩니다.",
+    "status=ACTIVE 인 항목만 발송 대상에 포함됩니다.",
+    "검색 조건(기간·상태·담당자)을 지정한 뒤 [조회]를 클릭합니다.",
+    "CSV 파일(최대 10MB)을 업로드하면 목록에 일괄 등록됩니다.",
+    "https://example.com/admin/settings/notification 에서 변경합니다.",
+    "API 호출 한도(분당 60회)를 넘으면 잠시 후 다시 시도해야 합니다.",
+    "[저장]을 클릭하면 입력한 내용이 저장되고 목록 화면으로 돌아갑니다.",
+    "관리자가 승인하면 요청자에게 메일과 문자로 결과가 안내됩니다.",
+    "Excel 다운로드 시 현재 검색 결과 전체(페이지와 무관)가 포함됩니다.",
+    "기관·사용자 계정 관리, API 키·알림 채널·메일 서버 등 공용 설정",
+    "이 항목은 설정 화면에서 값을 바꾸면 바로 적용되며, 바뀐 값은 이력에 남습니다.",
+    "최근 30일간의 로그인 기록을 보여 주며, 실패한 시도는 빨간색으로 표시됩니다.",
+    "비밀번호는 영문 대·소문자, 숫자, 특수문자를 조합해 8자 이상으로 입력해야 합니다.",
+    "Please contact the system administrator if the problem persists.",
+    "기관 관리자는 소속 기관의 사용자만 조회·수정할 수 있으며, 다른 기관의 정보는 목록에 "
+    "표시되지 않습니다. 권한이 더 필요하면 총괄 관리자에게 요청합니다.",
+]
 HANGUL_BASE = "가나다라마바사아자차카타파하" * 10
 HANGUL_NCH = (2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 24, 28, 32, 36, 40, 48, 56, 64, 80)
 ASCII_NCH = (10, 20, 30, 45, 60, 90)
@@ -69,6 +99,9 @@ def build(out_dir, font="auto"):
         for ncol in (2, 3):
             for nch in ASCII_NCH:
                 add(kind, ncol, base[:nch], 3)
+    for text in REAL_SAMPLES:
+        for ncol in (2, 3, 4, 5):
+            add("real", ncol, text, 2)
 
     os.makedirs(out_dir, exist_ok=True)
     pptx_path = os.path.join(out_dir, "probe.pptx")

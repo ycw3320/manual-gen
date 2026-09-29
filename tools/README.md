@@ -83,3 +83,33 @@ h = 0.1833 x 줄수 + 0.100   (최소 0.350)
 최대 2줄 적게 잡는다**는 것이 드러났다(72표본 중 10건). 행 높이를 크게 잡고 있던
 동안에는 가려져 있었으므로, 행 높이 계수를 낮출 때는 글자 폭도 함께 고쳐야 한다.
 실측 폭은 소문자·숫자 0.64 / 대문자 0.72 / `m`·`w` 0.90 / `i`·`l`·`j` 0.36 이었다.
+
+## 2026-09 글꼴 실측 줄바꿈
+
+`char_units` 추정은 과소 0건이지만 한 줄 글자 수를 적게 잡아 표를 약 30% 길게 봤다(표
+쪽 아래 여백·설명만 넘어간 쪽의 원인). 그래서 빌더가 **실제 렌더 검사를 할 수 있을 때**
+(PowerPoint 가 있는 PC)는 셀 줄 수를 글꼴 파일로 재서 PowerPoint 의 줄바꿈을 흉내 낸다
+(`draft_parser.cell_lines` — 한글은 글자마다, 영문·숫자는 단어째 끊고, 닫는 문장부호는
+줄 머리에, 여는 괄호는 줄 끝에 두지 않는다). 빌드 끝에 `scripts/check_layout.ps1` 로
+표가 있는 쪽의 실제 렌더 겹침을 재고, 겹치면 넉넉한 추정(`--table-estimate safe`)으로
+다시 짓는다. PowerPoint·글꼴 파일·Pillow 중 하나라도 없으면 처음부터 넉넉한 추정이다.
+
+검증에는 실제 표 문장 모양의 표본(`REAL_SAMPLES` — 띄어쓰기·쉼표·가운뎃점·괄호·영문·긴
+URL) 96개를 더해 225표본을 쓴다:
+
+```bash
+python tools/make_table_probe.py --out-dir C:\work\calib --font pretendard
+powershell -ExecutionPolicy Bypass -File tools/measure_table.ps1 -Path C:\work\calib\probe.pptx -Out C:\work\calib\measured.csv
+python tools/calibrate_table.py --dir C:\work\calib --measure pretendard
+```
+
+225표본, 줄 수(추정-실제) 분포:
+
+| 글꼴 | char_units(넉넉한 추정) | 글꼴 실측(`MEASURE_FIT` 0.97) |
+|---|---|---|
+| Pretendard | 일치 128 · +1줄 93 · +2줄 4 | **일치 214 · +1줄 11 · 과소 0** |
+| 맑은 고딕 | 일치 174 · +1줄 50 · +2줄 1 | **일치 209 · +1줄 16 · 과소 0** |
+
+`MEASURE_FIT`(셀 폭 중 채운다고 보는 비율)는 1.0 에서도 과소 0건(Pretendard 225/225
+일치)이고 1.02 에서 과소가 나기 시작한다 — 0.97 은 PowerPoint 버전 차이 등을 흡수하는
+3% 여유다. 글꼴·글자 크기·셀 여백을 바꾸면 이 측정을 다시 돌린다.

@@ -497,6 +497,99 @@ ROW_PAD = 0.10             # 셀 상하 여백(in)
 ROW_MIN_H = 0.35           # 최소 행 높이(in)
 ROW_SAFETY = 0.02          # 행당 여유 — 폰트 대체·줄바꿈 경계 오차를 흡수한다
 
+# 셀 줄 수 실측 — 글꼴 파일로 글자 폭을 재 PowerPoint 의 줄바꿈을 흉내 낸다. char_units
+# 추정은 한 줄 글자 수를 적게 잡아(안전 쪽) 표를 약 30% 길게 보므로 쪽 아래가 빈다.
+# 실측은 빌더가 **실제 렌더 검사로 결과를 확인할 수 있을 때만**(PowerPoint COM) 켠다 —
+# build_pptx 가 set_table_measure 로 켜고, 검사에서 넘침이 나오면 끄고 다시 짓는다.
+CELL_PT = 11               # 표 글자 크기(pt) — render_table 과 같아야 한다
+CELL_MARGIN = 0.10         # 셀 좌우 여백(in) — PowerPoint 표 기본값
+MEASURE_FIT = 0.97         # 실측 폭의 이 비율까지만 찬다고 본다 — 렌더 엔진과의 미세 차이 흡수
+_measure = None            # {"body": 글꼴, "head": 글꼴, "cache": {}} — None 이면 char_units 추정
+_NO_START = set(")]}〕〉》」』】,.:;!?%·…、。’”")      # 줄 머리에 올 수 없는 글자(앞 단위에 붙는다)
+_NO_END = set("([{〔〈《「『【‘“")                      # 줄 끝에 올 수 없는 글자(뒤 단위에 붙는다)
+
+
+def set_table_measure(body_font=None, head_font=None):
+    """표 셀 줄 수 실측을 켠다(글꼴 파일 경로) — 인자가 없거나 Pillow 가 없으면 끈다.
+    반환: 켜졌는지."""
+    global _measure
+    _measure = None
+    if not body_font:
+        return False
+    try:
+        from PIL import ImageFont
+        body = ImageFont.truetype(body_font, 1000)
+        head = ImageFont.truetype(head_font, 1000) if head_font else body
+    except Exception:
+        return False
+    _measure = {"body": body, "head": head, "cache": {}}
+    return True
+
+
+def table_measure_on():
+    return _measure is not None
+
+
+def _break_units(text):
+    """줄바꿈 단위 — 한글·한자는 글자마다, 영문·숫자는 단어째, 공백은 따로. 줄 머리·끝
+    금칙 글자는 이웃 단위에 붙인다(PowerPoint 는 그 자리에서 줄을 바꾸지 않는다)."""
+    units, cur = [], ""
+    for c in text:
+        if c == " " or ord(c) >= 0x2E80:
+            if cur:
+                units.append(cur)
+                cur = ""
+            units.append(c)
+        else:
+            cur += c
+    if cur:
+        units.append(cur)
+    out = []
+    for u in units:
+        if out and u != " " and out[-1] != " " and (u[0] in _NO_START or out[-1][-1] in _NO_END):
+            out[-1] += u
+        else:
+            out.append(u)
+    return out
+
+
+def _unit_w(font_key, s):
+    """글자열 폭(in) — 표 글자 크기 기준, 캐시."""
+    key = (font_key, s)
+    c = _measure["cache"]
+    if key not in c:
+        c[key] = _measure[font_key].getlength(s) / 1000 * CELL_PT / 72
+    return c[key]
+
+
+def cell_lines(text, col_w_in, head=False):
+    """셀 글자가 몇 줄로 렌더되는지 — 실측 폭으로 줄을 채워 본다(실측이 켜져 있을 때만)."""
+    fk = "head" if head else "body"
+    avail = (col_w_in - 2 * CELL_MARGIN) * MEASURE_FIT
+    total = 0
+    for para in (text or "").split("\n"):
+        lines, cur, gap = 1, 0.0, 0.0
+        for u in _break_units(para):
+            w = _unit_w(fk, u)
+            if u == " ":
+                gap += w                    # 줄 끝 공백은 폭을 차지하지 않는다 — 다음 단위와 함께 판단
+                continue
+            if cur and cur + gap + w > avail:
+                lines, cur = lines + 1, 0.0
+            elif cur:
+                cur += gap
+            gap = 0.0
+            if w > avail:                   # 한 줄보다 긴 단어 — 글자 단위로 끊긴다
+                for ch in u:
+                    cw = _unit_w(fk, ch)
+                    if cur and cur + cw > avail:
+                        lines, cur = lines + 1, 0.0
+                    cur += cw
+            else:
+                cur += w
+        total += lines
+    return max(1, total)
+
 
 def table_height_est(rows, width_in):
     """표의 실제 렌더 높이(in) 추정 — 셀 텍스트가 열 폭을 넘어 래핑되면 행이
@@ -504,10 +597,14 @@ def table_height_est(rows, width_in):
     행마다 ROW_SAFETY 를 더해 언제나 실제 이상으로 잡는다 — 적게 잡으면 표가
     페이지를 넘고, 많이 잡으면 여백이 남을 뿐이다."""
     n_cols = max(len(r) for r in rows)
-    col_ea = max(6, int(width_in / n_cols * 5.9))  # 11pt 전각 기준 열당 줄 문자 수
+    col_w = width_in / n_cols
+    col_ea = max(6, int(col_w * 5.9))  # 11pt 전각 기준 열당 줄 문자 수(실측이 꺼져 있을 때)
     h = 0.0
-    for r in rows:
-        lines = max((text_lines(plain(c), col_ea) for c in r), default=1)
+    for ri, r in enumerate(rows):
+        if _measure is not None:        # 첫 행은 머리글(굵은 글꼴)
+            lines = max((cell_lines(plain(c), col_w, head=ri == 0) for c in r), default=1)
+        else:
+            lines = max((text_lines(plain(c), col_ea) for c in r), default=1)
         h += max(ROW_MIN_H, ROW_LINE_H * lines + ROW_PAD) + ROW_SAFETY
     return h
 

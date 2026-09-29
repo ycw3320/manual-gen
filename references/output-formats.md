@@ -95,6 +95,12 @@ powershell -ExecutionPolicy Bypass -File scripts/export_pdf.ps1 -Path <문서.pp
   스택하고, CONTENTS 는 병합된 절 모두 같은 슬라이드 번호를 가리킨다. 분량이 본문
   예산을 넘으면 절 경계에서만 나눈다. 절마다 거의 빈 슬라이드가 생기는 낭비를 막기
   위함이다. (번들 빌더 내장 — 템플릿 서식 복제 경로에서도 동일 적용)
+- **표 높이**: 쪽 나눔 전에 표 높이를 추정한다. PowerPoint 가 있는 PC 에서는 셀 줄 수를
+  글꼴 파일로 재서(한글은 글자마다, 영문은 단어째 줄바꿈) 쪽을 채우고, 빌드 끝에 표가 있는
+  쪽을 **실제 렌더로 검사**해(`scripts/check_layout.ps1` — 표와 아래 내용의 겹침, 본문 하한
+  넘침) 문제가 있으면 넉넉한 추정(`--table-estimate safe`)으로 스스로 다시 짓는다.
+  PowerPoint·글꼴 파일·Pillow 가 없으면 처음부터 넉넉한 추정이다(겹침 없음, 대신 표 쪽
+  아래에 여백). 보정 근거는 `tools/README.md`.
 
 ### 템플릿 모드 (사용자 pptx 템플릿 — `--template`)
 

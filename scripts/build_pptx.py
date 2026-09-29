@@ -35,6 +35,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from draft_parser import (parse_draft, parse_inline, parse_meta, plain, image_size,
                           resolve_image, text_lines, tile_tall_image, CIRCLED,
                           table_height_est, tables_height, paginate_tables, TABLE_PAD,
+                          set_table_measure,
                           PORT_BODY_W, PORT_TEXT_BOTTOM, PORT_IMG_Y, PORT_BODY_Y)
 
 
@@ -304,6 +305,48 @@ def apply_orientation(portrait):
 
 
 apply_orientation(False)
+
+
+def render_check_available():
+    """빌드 후 실제 렌더 검사(PowerPoint COM)를 할 수 있는지 — Windows + PowerPoint 등록."""
+    if os.name != "nt":
+        return False
+    try:
+        import winreg
+        winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, r"PowerPoint.Application\CLSID"))
+        return True
+    except OSError:
+        return False
+
+
+def render_check(path):
+    """표가 있는 쪽의 실제 렌더 겹침·넘침 검사(check_layout.ps1).
+    반환: (실행됐는지, [(쪽, 종류, 넘친 in)])."""
+    import subprocess
+    ps = os.path.join(os.path.dirname(os.path.abspath(__file__)), "check_layout.ps1")
+    try:
+        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps,
+                            "-Path", os.path.abspath(path), "-BottomIn", f"{TEXT_BOTTOM.inches:.3f}"],
+                           capture_output=True, timeout=900)
+    except (OSError, subprocess.TimeoutExpired):
+        return False, []
+    if r.returncode not in (0, 1):
+        return False, []
+    out = []
+    for line in r.stdout.decode("utf-8", "replace").splitlines():
+        m = re.match(r"VIOLATION slide=(\d+) what=(\w+) over_in=([\d.,]+)", line.strip())
+        if m:
+            out.append((int(m.group(1)), m.group(2), float(m.group(3).replace(",", "."))))
+    return True, out
+
+
+def table_measure_fonts():
+    """표 글꼴 파일(본문, 머리글) — 셀 줄바꿈 실측용. 머리글은 render_table 과 같게 SemiBold
+    (없으면 같은 글꼴의 Bold). 못 찾으면 None."""
+    import template_mode as TM
+    body = TM.font_file(FONT)
+    head = TM.font_file(FONT_SEMI) if FONT_SEMI else (TM.font_file(f"{FONT} Bold") or body)
+    return body, head
 
 
 def _set_font(run, size, bold=False, color=TEXT, face=None, tracking=None, name=None):
@@ -1568,7 +1611,12 @@ def _cell_line(cell, tag, color=None, w_pt=0.75):
     tcPr.insert(at, ln)
 
 
+TABLES_RENDERED = 0        # 이번 빌드에서 그린 표 수 — 0 이면 실제 렌더 검사를 건너뛴다
+
+
 def render_table(slide, rows, x, y, w):
+    global TABLES_RENDERED
+    TABLES_RENDERED += 1
     n_rows, n_cols = len(rows), max(len(r) for r in rows)
     height = Inches(0.35) * n_rows
     shape = slide.shapes.add_table(n_rows, n_cols, x, y, w, height)
@@ -1799,6 +1847,10 @@ def main():
                          "번들 그대로). 파일 경로 또는 등록 이름(default = 기본 템플릿, "
                          "template_registry.py). 처음 쓰는 템플릿은 분석 요약을 보여 주고 성공하면 등록한다")
     ap.add_argument("--template-refresh", action="store_true", help="템플릿을 다시 분석한다")
+    ap.add_argument("--table-estimate", choices=["auto", "safe"], default="auto",
+                    help="표 높이 추정: auto = 글꼴로 줄바꿈을 재서 잡고 빌드 후 PowerPoint 로 실제 렌더를 "
+                         "확인(겹치면 safe 로 자동 재생성, PowerPoint 가 없으면 safe) / safe = 넉넉한 "
+                         "추정(겹침 없음 대신 표 쪽 아래에 여백이 남는다)")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
 
@@ -1810,6 +1862,17 @@ def main():
               "PC 에서 열면 다른 글꼴로 보입니다(같게 보여야 하면 --font malgun)")
     else:
         print(f"[build_pptx] 글꼴: {font}")
+    # 표 높이: 글꼴 실측은 결과를 실제 렌더로 확인할 수 있을 때만 쓴다(못 하면 넉넉한 추정)
+    measured, why = False, "--table-estimate safe"
+    if args.table_estimate == "auto":
+        if not render_check_available():
+            why = "PowerPoint 가 없어 실제 렌더로 확인할 수 없음"
+        elif not set_table_measure(*table_measure_fonts()):
+            why = "글꼴 파일 또는 Pillow 를 찾지 못함"
+        else:
+            measured = True
+    print("[build_pptx] 표 높이: " + ("글꼴 실측 — 빌드 후 실제 렌더로 겹침을 확인합니다" if measured
+                                      else f"넉넉한 추정({why})"))
     if args.theme_from and not args.template:
         print("[build_pptx] 참고: --theme-from 은 폐기 예정입니다 — 템플릿 모양 그대로 만들려면 "
               "--template <템플릿.pptx>", file=sys.stderr)
@@ -1953,6 +2016,28 @@ def main():
             is_def = TM.load_registry()["default"] == e["name"]
             print(f"[build_pptx] 템플릿 등록: '{e['name']}'" + (" (기본 템플릿)" if is_def else "")
                   + " — 다음부터 이름으로 쓸 수 있습니다(template_registry.py list)")
+
+    if measured and TABLES_RENDERED:
+        ran, viol = render_check(args.out)
+        if ran and not viol:
+            print(f"[build_pptx] 실제 렌더 검사 통과 — 표 {TABLES_RENDERED}개, 겹침·넘침 0건")
+            return
+        names = {"table_overlap": "표가 아래 내용과 겹침", "table_bottom": "표가 본문 하한을 넘음",
+                 "text_bottom": "글이 본문 하한을 넘음"}
+        if ran:
+            print(f"[build_pptx] 실제 렌더 검사: 겹침·넘침 {len(viol)}건 — 넉넉한 표 높이 추정으로 다시 "
+                  "만듭니다", file=sys.stderr)
+            for no, what, over in viol[:6]:
+                print(f"  - 슬라이드 {no}: {names.get(what, what)} {over:.2f}in", file=sys.stderr)
+        else:
+            print("[build_pptx] 실제 렌더 검사를 실행하지 못했습니다 — 넉넉한 표 높이 추정으로 다시 "
+                  "만듭니다", file=sys.stderr)
+        import subprocess
+        sys.stdout.flush()
+        sys.stderr.flush()                  # 재생성 로그가 이 빌드 로그 뒤에 오도록
+        r = subprocess.run([sys.executable, os.path.abspath(__file__)] + sys.argv[1:]
+                           + ["--table-estimate", "safe"])
+        sys.exit(r.returncode)
 
 
 if __name__ == "__main__":

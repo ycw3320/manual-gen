@@ -1128,10 +1128,11 @@ def render_cover(prs, doc, args):
     if TEMPLATE is not None:
         # 표지 자리표시자를 이번 매뉴얼 문구로 채운다 — 고정 텍스트형 자리(매뉴얼 구분 등)는
         # TEMPLATE.prepare 가 레이아웃 사본에서 이미 바꿨다
+        import template_mode as TM
         vals = _template_values(t)
         for sl in TEMPLATE.m["cover"]["slots"]:
             if "ph" in sl and sl["field"] in vals:
-                TEMPLATE.fill(slide, sl["ph"], vals[sl["field"]], name="mg-chrome-cover")
+                TEMPLATE.fill(slide, sl["ph"], TM.slot_value(sl, vals), name="mg-chrome-cover")
         return
     draw_cover_art(slide)
     ax, ay, cols, rows, s = COVER_ART
@@ -1224,11 +1225,23 @@ def _toc_h(entry, first):
     w = TOC_COL_W.inches - S["num_w"]
     if entry["kind"] in ("ch", "cont"):
         title = entry["ref"]["title"]
+        if S.get("mode") == "list":
+            return (0 if first else S["gap"]) + S["ch_h"] * _toc_lines(_toc_ch_label(entry), S["title"]["size"], w)
         return ((0 if first else S["gap"]) + S["pre"] + S["label_h"]
                 + S["title_h"] * _toc_lines(title, S["title"]["size"], w) + S["after"])
+    si = S.get("sec_indent", 0.0)
     if _toc_depth(entry["ref"]) >= 2:
-        return S["sub_h"] * _toc_lines(entry["label"], S["sub"]["size"], w - S["indent"])
-    return S["sec_h"] * _toc_lines(entry["label"], S["sec"]["size"], w)
+        return S["sub_h"] * _toc_lines(entry["label"], S["sub"]["size"], w - si - S["indent"])
+    return S["sec_h"] * _toc_lines(entry["label"], S["sec"]["size"], w - si)
+
+
+def _toc_ch_label(entry):
+    """번호 목록형 목차의 장 줄 — 템플릿 번호 꼴('{n:02d}  {title}')."""
+    import template_mode as TM
+    ref = entry["ref"]
+    n = int(ref["num"]) if str(ref["num"]).isdigit() else ref["num"]
+    label = TM._fmt_n(TOC_STYLE["chapter_fmt"].replace("{title}", "{{title}}"), n).format(title=ref["title"])
+    return label + ("  (계속)" if entry["kind"] == "cont" else "")
 
 
 def paginate_toc(toc_items):
@@ -1301,6 +1314,8 @@ def render_contents(prs, page_cols, slide_no):
             for s in TEMPLATE.chrome(slide, key):
                 if s.get("ph") is not None:
                     TEMPLATE.fill(slide, s["ph"], s.get("text") or "목차")
+        if TEMPLATE.is_fallback("toc"):
+            _template_title(slide, "chapter", "목차")     # 목차 레이아웃이 없는 템플릿 — 장 제목 자리에
     else:
         tf = add_text(slide, BODY_X, Inches(0.84), Inches(1.7), Inches(0.5), name="mg-chrome-toc")
         add_para(tf, "목차", 24, color=DARK, face="semi", space_after=0)
@@ -1315,6 +1330,21 @@ def render_contents(prs, page_cols, slide_no):
         y = TOC_TOP.inches
         for j, e in enumerate(col):
             ref = e["ref"]
+            if e["kind"] in ("ch", "cont") and S.get("mode") == "list":
+                if j:
+                    y += S["gap"]
+                label = _toc_ch_label(e)
+                n = _toc_lines(label, S["title"]["size"], title_w)
+                tf = add_text(slide, Inches(x0), Inches(y), Inches(title_w), Inches(S["ch_h"] * n),
+                              name="mg-chrome-toc")
+                _spec_para(tf, label, S["title"] if e["kind"] == "ch" else dict(S["title"], color="muted"))
+                if e["kind"] == "ch":
+                    tf = add_text(slide, Inches(x0 + title_w), Inches(y), Inches(S["num_w"]), Inches(S["ch_h"]),
+                                  name="mg-chrome-toc")
+                    _spec_para(tf, _page_text(slide_no.get(f"ch:{ref['num']}", "")), S["title_page"],
+                               align=page_align)
+                y += S["ch_h"] * n
+                continue
             if e["kind"] in ("ch", "cont"):
                 if j:
                     y += S["gap"]
@@ -1345,7 +1375,7 @@ def render_contents(prs, page_cols, slide_no):
                 continue
             sub = _toc_depth(ref) >= 2
             spec, pspec, row_h = (S["sub"], S["sub_page"], S["sub_h"]) if sub else (S["sec"], S["sec_page"], S["sec_h"])
-            indent = S["indent"] if sub else 0.0
+            indent = S.get("sec_indent", 0.0) + (S["indent"] if sub else 0.0)
             n = _toc_lines(e["label"], spec["size"], title_w - indent)
             tf = add_text(slide, Inches(x0 + indent), Inches(y), Inches(title_w - indent), Inches(row_h * n),
                           name="mg-chrome-toc")
@@ -1360,6 +1390,10 @@ def render_contents(prs, page_cols, slide_no):
 
 def render_divider(prs, ch):
     slide = _new_slide(prs, "divider")
+    if TEMPLATE is not None:
+        # 템플릿 간지 — 장 번호 라벨과 장 제목만 채운다(모양은 템플릿 그대로)
+        TEMPLATE.fill_divider(slide, int(ch["num"]) if str(ch["num"]).isdigit() else ch["num"], ch["title"])
+        return
     colors = _art_colors()
     # 표지와 같은 도형 언어 — 우하단 모서리의 사분원과 작은 원
     s = 3.1 if PORTRAIT else 2.7
@@ -1411,8 +1445,7 @@ def render_header(slide, ch, sec, part, right_label=True):
 def render_page_no(slide, no):
     """꼬리 — 아래 가는 선 + 쪽 번호(두 자리). 템플릿 모드는 템플릿의 쪽 번호 자리를 채운다."""
     if TEMPLATE is not None:
-        for sl in TEMPLATE.chrome(slide, "page"):
-            TEMPLATE.fill(slide, sl["ph"], f"{no:0{max(1, sl.get('pad') or 2)}d}")
+        TEMPLATE.set_page(slide, no)
         return
     add_rect(slide, BODY_X, RULE_BOT_Y, BODY_W, Pt(0.75), TINT_RULE, name="mg-chrome-rule")
     tf = add_text(slide, BODY_X + BODY_W - Inches(0.8), FOOT_Y, Inches(0.8), Inches(0.24),
@@ -1427,8 +1460,9 @@ def render_page_no(slide, no):
 def _template_values(t):
     """템플릿 자리에 넣을 이번 매뉴얼 문구. 영문 부제 자리에는 버전·날짜를 넣는다(영문명이 없다)."""
     meta = "  ·  ".join(v for v in (f"버전 {t['version']}" if t["version"] else "", t["date"]) if v)
+    version = re.sub(r"(?i)^(v|ver\.?|version|버전)\s*", "", t["version"] or "")
     return {"system": t["system"] or t["kind"], "kind": t["kind"], "audience": t["audience"],
-            "year": t["year"], "meta": meta,
+            "year": t["year"], "date": t["date"] or t["year"], "version": version, "meta": meta,
             "run_head": " ".join(v for v in (t["system"], t["kind"]) if v)}
 
 
@@ -1488,11 +1522,35 @@ def _toc_style_from(t, rule_color):
         "sub": sub, "sub_page": spec("sub_page", sub["size"], "muted")})
 
 
+def _toc_list_style(t):
+    """번호 목록형 목차('01  시스템 개요 …… 4') → TOC_STYLE. 장 줄은 표본 항목의 서식(글자 크기는
+    12~18pt 로 맞춤), 절은 그 아래 들여 쓴 작은 글자. 장 사이 간격은 표본 항목 간격에서 잡는다."""
+    st = t.get("styles", {})
+    ts, ps = st.get("title") or {}, st.get("title_page") or {}
+    size = min(max(ts.get("size") or 16, 12), 18)
+    title = {"size": size, "font": ts.get("font"), "bold": bool(ts.get("bold")), "color": ts.get("color") or "dark"}
+    title_page = {"size": min(max(ps.get("size") or size, 10), size), "font": ps.get("font") or title["font"],
+                  "bold": bool(ps.get("bold")), "color": ps.get("color") or title["color"]}
+    sec_size = max(10.0, round(size * 0.72 * 2) / 2)
+    sec = {"size": sec_size, "font": title["font"], "color": "text"}
+    sub = {"size": max(9.0, sec_size - 1), "font": title["font"], "color": "muted"}
+    ch_h = round(max(0.3, size / 72 * 1.7), 3)
+    return dict(TOC_DEFAULT, **{
+        "mode": "list", "chapter_fmt": t.get("chapter_fmt") or "{n:02d}  {title}",
+        "num_w": t.get("num_w") or 0.6, "sec_indent": round(min(0.45, size / 72 * 1.6), 3), "indent": 0.25,
+        "ch_h": ch_h, "gap": round(max(0.12, (t.get("pitch") or 0) - ch_h), 3),
+        "sec_h": round(sec_size / 72 * 1.9, 3), "sub_h": round(sub["size"] / 72 * 1.85, 3),
+        "page_align": t.get("page_align") or "r",
+        "title": title, "title_page": title_page, "sec": sec, "sec_page": dict(sec, color="muted"),
+        "sub": sub, "sub_page": dict(sub)})
+
+
 def apply_body_geometry(body_top, body_bottom, body_x=None):
     """본문 영역이 바뀔 때(템플릿 머리·꼬리 높이) — 본문 시작·이미지 시작·설명 하한을 옮기고,
     줄어든 높이만큼 개요 병합·시각 요소 없는 절의 예산도 줄인다. 이미지 폭(균일 폭 앵커)은
-    그대로 둔다 — 폭을 바꾸면 줄당 글자 수·표 높이 보정이 모두 달라지기 때문이다."""
-    global BODY_Y, IMG_Y, TEXT_BOTTOM, COMBINE_Y, COMBINE_BUDGET, PLAIN_LINES, BODY_X
+    그대로 둔다 — 폭을 바꾸면 줄당 글자 수·표 높이 보정이 모두 달라지기 때문이다.
+    가로형은 이미지 프레임 높이가 고정값이라 줄어든 높이만큼 함께 줄인다(캡션이 설명 하한 안에)."""
+    global BODY_Y, IMG_Y, TEXT_BOTTOM, COMBINE_Y, COMBINE_BUDGET, PLAIN_LINES, BODY_X, V_FRAME_H, H_FRAME_H
     d_top = body_top - BODY_Y.inches
     d_bot = TEXT_BOTTOM.inches - body_bottom
     BODY_Y = Inches(body_top)
@@ -1501,6 +1559,9 @@ def apply_body_geometry(body_top, body_bottom, body_x=None):
     COMBINE_Y += d_top
     COMBINE_BUDGET -= d_top + d_bot
     PLAIN_LINES -= max(0, math.ceil((d_top + d_bot) / LINE_H))
+    if not PORTRAIT and d_top + d_bot > 0:
+        V_FRAME_H = Inches(V_FRAME_H.inches - (d_top + d_bot))
+        H_FRAME_H = Inches(max(IMG_MIN_H, H_FRAME_H.inches - (d_top + d_bot)))
     if body_x is not None:
         BODY_X = Inches(body_x)
 
@@ -1519,7 +1580,18 @@ def use_template(man):
     t = man.get("toc") or {}
     if t.get("x") is not None:
         TOC_COL_XS, TOC_COL_W, TOC_TOP = [Inches(t["x"])], Inches(t["w"]), Inches(t["top"])
-        TOC_STYLE = _toc_style_from(t, col.get("rule"))
+        TOC_STYLE = _toc_list_style(t) if t.get("style") == "list" else _toc_style_from(t, col.get("rule"))
+    else:
+        # 목차 항목 서식을 못 읽은 템플릿 — 기본 목차 서식(템플릿 색)을 본문 폭에 맞춰 '목차' 제목
+        # (목차 제목 자리, 없으면 장 제목 자리) 아래에 그린다. 가로형은 두 단.
+        head = next((s.get("box") for s in t.get("chrome", []) if s.get("role") == "toc_title" and s.get("box")),
+                    None) or (c.get("proto", {}).get("chapter") or {}).get("box")
+        x0, gap = BODY_X.inches, 0.6
+        full = SLIDE_W.inches - 2 * x0
+        w = full if PORTRAIT else (full - gap) / 2
+        TOC_COL_XS = [Inches(x0)] if PORTRAIT else [Inches(x0), Inches(x0 + w + gap)]
+        TOC_COL_W = Inches(w)
+        TOC_TOP = Inches(max(c["body_top"] - 0.35, (head[1] + head[3] + 0.3) if head else 0))
 
 
 def apply_picture_border(pic):
@@ -1776,7 +1848,8 @@ def self_check(prs, combined_idx=frozenset()):
         for shape in slide.shapes:
             # 스크린샷 렌더 폭 수집 — 매뉴얼 전체에서 캡처가 균일 폭으로 들어가야
             # 일관성이 유지된다(폭이 균일성 앵커). shape_type 13 = PICTURE.
-            if getattr(shape, "shape_type", None) == 13 and shape.width:
+            if getattr(shape, "shape_type", None) == 13 and shape.width \
+                    and not shape.name.startswith(("mg-chrome", "mg-art")):     # 템플릿 로고 등 크롬 그림 제외
                 pic_widths.append(shape.width)
             if not shape.has_text_frame:
                 continue

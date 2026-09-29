@@ -1758,6 +1758,8 @@ def render_screen(prs, plan_item, ch_of, page_no):
     for tb in plan_item["tables"]:
         render_table(slide, tb["rows"], text_x, ty, text_w)
         ty += Inches(table_height_est(tb["rows"], text_w.inches)) + Inches(0.25)
+    if not (plan_item["items"] or plan_item["notes"]):
+        return        # 표만 있는 쪽 — 빈 설명 틀을 두면 표 아래 남은 높이가 모자랄 때 쪽 밖으로 나간다
     tf = add_text(slide, text_x, ty, text_w, max(Inches(0.4), TEXT_BOTTOM - ty))
     render_items(tf, plan_item["items"], 11.5)
     for note in plan_item["notes"]:

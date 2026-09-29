@@ -27,10 +27,28 @@
 |---|---|
 | **Claude Code** (데스크톱 앱 또는 CLI) | 이 skill의 실행 환경 — https://claude.com/claude-code |
 | **Claude 모델: Sonnet 이상 권장** | 문서의 형식·구조·검수는 검증 게이트가 모델과 무관하게 보장하고, 설명 문장도 화면 유형별 표준 문형을 따르게 해 모델 간 편차를 줄였다. 다만 **화면을 이해하고 기능을 파악하는 정확성은 모델 성능에 비례**하므로 — 모델이 좋을수록 결과가 정교해지며, 화면이 많거나(50+) 복잡한 시스템일수록 상위 모델(Opus 등)을 권한다 |
-| **Python 3.10+** | 문서 생성·이미지 처리 스크립트용 |
+| **Python 3.10+** | 문서 생성·이미지 처리 스크립트용 — **없으면 skill 이 처음 실행할 때 설치 여부를 묻는다**(아래) |
 | Chrome (권장) | 화면 캡처용 — 없으면 Edge/Whale 등으로 선택 가능 |
 
 PDF 변환은 PowerPoint 또는 LibreOffice 를 쓴다(둘 중 하나만 있으면 된다).
+
+**파이썬이 없거나 3.10 미만이면** skill 이 맨 처음에 알려 주고 설치 방법을 묻는다
+(Windows — 동의 없이 설치하지 않는다):
+
+| 선택 | 하는 일 |
+|---|---|
+| winget 으로 설치 (권장) | Python 3.12 를 **현재 사용자에게만** 설치(관리자 권한 불필요, Microsoft 공식 winget 원본). 설치하면 Python 라이선스·winget 원본 약관에 동의하게 된다. 설치가 끝나면 이어서 진행 |
+| 직접 설치 | https://www.python.org/downloads/ 에서 받아 설치 — 설치 첫 화면에서 **"Add python.exe to PATH" 체크** 후, Claude Code 에서 새 대화로 다시 호출 |
+| 중단 | 설치하지 않고 멈춘다 |
+
+미리 확인해 보려면(파이썬 없이 동작):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\.claude\skills\manual-gen\scripts\check_python.ps1"
+```
+
+> Windows 에서 `python` 을 쳤을 때 Microsoft Store 가 열리면 설치된 것이 아니라 Store 로
+> 연결되는 바로가기다 — 이 경우도 '없음'으로 판정한다.
 
 파이썬 패키지(python-pptx, Pillow, Playwright 등)는 **처음 실행할 때 skill이 스스로
 점검해서 없는 것만 설치를 안내**하므로 미리 설치할 필요 없다.
@@ -248,6 +266,7 @@ scripts/
 ├── resize_images.py            # 문서 삽입 전 이미지 축소
 ├── draft_parser.py             # 원고 공용 파서
 ├── validate_draft.py           # 원고 사전 린터 — 구조 위반을 빌드 전에 차단
+├── check_python.ps1            # 파이썬 확인·설치(동의 시 winget) — 파이썬 없이 도는 첫 점검
 ├── check_env.py                # 환경 점검(doctor) — 의존성·브라우저·가능 경로 확인
 ├── build_pptx.py               # 원고→PPTX (표지/목차/고정 프레임·테두리·분할·자체 검증)
 ├── template_mode.py            # 템플릿 모드 — 사용자 pptx 템플릿 분석·크롬 채우기·잔존 검사

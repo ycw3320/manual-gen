@@ -33,7 +33,17 @@ metadata:
 
 ### 1-1. 자동 감지·추론 (사용자에게 묻지 않는다)
 
-0. **환경 점검**: `python scripts/check_env.py`를 실행해 의존성·브라우저·가능 경로를
+0. **파이썬 확인**(Windows): 다른 스크립트가 모두 파이썬이므로 맨 먼저
+   `powershell -ExecutionPolicy Bypass -File scripts/check_python.ps1` 을 실행한다(파이썬
+   없이 돈다). 종료 코드 0 이면 출력의 `PYTHON=` 경로를 쓴다 — `python` 이 PATH 에 없거나
+   설치 직후라 반영되지 않았으면 이후 모든 `python scripts/...` 를 그 경로로 부른다.
+   1(없음)·2(3.10 미만)이면 **AskUserQuestion 으로 설치 여부를 묻는다** — 선택지:
+   ① winget 으로 설치(권장 — 현재 사용자에게만, 관리자 권한 불필요. Python 라이선스와
+   winget 원본 약관 동의가 포함됨을 함께 적는다) ② 직접 설치(출력의 python.org 안내와
+   'Add python.exe to PATH' 체크를 전달) ③ 중단. ①에 동의한 경우에만 `-Install` 로 다시
+   실행한다(종료 코드 3 이면 ②로 안내). 설치는 PC 변경이므로 **auto 모드에서도 묻는다**.
+   macOS·Linux 는 `python3 --version` 으로 확인하고, 없으면 설치 방법(brew·apt)만 안내한다.
+   **환경 점검**: 이어서 `python scripts/check_env.py`를 실행해 의존성·브라우저·가능 경로를
    확인하고 스냅샷 한 줄을 config.md에 기록한다 — 환경마다 설치물이 달라 폴백이
    제각각 발동하면 산출 품질이 달라지므로, 결핍은 작업 후반이 아니라 시작 시점에
    드러나야 한다. 필요한 설치(python-pptx 등)는 이 시점에 사용자 확인 후 진행한다.

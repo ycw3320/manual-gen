@@ -1785,8 +1785,8 @@ def main():
     ap.add_argument("--theme", choices=sorted(THEMES), default="navy",
                     help="색 테마: navy=네이비+블루(기본) / forest=딥그린+틸 / charcoal=차콜+오렌지")
     ap.add_argument("--theme-from", metavar="TEMPLATE_PPTX",
-                    help="참고 템플릿 pptx 에서 색 테마(dark·accent)를 추출해 적용 — "
-                         "레이아웃·규격은 번들 그대로(서식 복제 아님). 추출 실패 시 --theme 폴백")
+                    help="(폐기 예정 — 템플릿 모양을 쓰려면 --template) 참고 템플릿 pptx 에서 색(dark·"
+                         "accent)만 추출해 기본 레이아웃에 입힌다. 테마 색이 Office 기본이면 실패 → --theme")
     ap.add_argument("--cover-label",
                     help='매뉴얼 구분 표기(예: "관리자 매뉴얼") — 표지 큰 제목과 러닝헤더에 쓴다. '
                          "미지정 시 원고 제목('관리자 매뉴얼 — 시스템명')이나 대상(관리자용 → "
@@ -1794,9 +1794,10 @@ def main():
     ap.add_argument("--font", choices=["auto", "pretendard", "malgun"], default="auto",
                     help="글꼴: auto=Pretendard 가 설치돼 있으면 사용, 없으면 맑은 고딕(기본) / "
                          "malgun=어느 Windows PC 에서 열어도 같게 보여야 할 때")
-    ap.add_argument("--template", metavar="TEMPLATE_PPTX",
+    ap.add_argument("--template", metavar="TEMPLATE",
                     help="템플릿 모드 — 이 pptx 의 표지·목차·본문 레이아웃과 글꼴·색으로 짓는다(본문 규격은 "
-                         "번들 그대로). 처음 쓰는 템플릿은 분석 결과(매니페스트)를 저장하고 요약을 보여 준다")
+                         "번들 그대로). 파일 경로 또는 등록 이름(default = 기본 템플릿, "
+                         "template_registry.py). 처음 쓰는 템플릿은 분석 요약을 보여 주고 성공하면 등록한다")
     ap.add_argument("--template-refresh", action="store_true", help="템플릿을 다시 분석한다")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
     args = ap.parse_args()
@@ -1810,6 +1811,8 @@ def main():
     else:
         print(f"[build_pptx] 글꼴: {font}")
     if args.theme_from and not args.template:
+        print("[build_pptx] 참고: --theme-from 은 폐기 예정입니다 — 템플릿 모양 그대로 만들려면 "
+              "--template <템플릿.pptx>", file=sys.stderr)
         got = theme_from_template(args.theme_from)
         if got:
             print(f"[build_pptx] 참고 템플릿 색 테마 적용: dark=#{got[0]} accent=#{got[1]} "
@@ -1822,7 +1825,8 @@ def main():
     if args.template:
         import template_mode as TM
         try:
-            man, created, mpath = TM.load_manifest(args.template, refresh=args.template_refresh)
+            tpath = TM.resolve_template(args.template)          # 경로 또는 등록 이름
+            man, created, mpath = TM.load_manifest(tpath, refresh=args.template_refresh)
         except (ValueError, FileNotFoundError) as e:
             fail(f"템플릿을 쓸 수 없습니다: {e}")
         state = "새로 분석(처음 쓰는 템플릿이면 아래 요약을 검토)" if created else "저장본"
@@ -1944,6 +1948,11 @@ def main():
                 print(f"[build_pptx] ERROR: 템플릿 표본 문구가 남았습니다 — '{g}' ({part})", file=sys.stderr)
             sys.exit(1)
         print("[build_pptx] 템플릿 잔존 검사 통과 — 표본 문구 0건")
+        if not TM.is_registered(tpath):
+            e, _new = TM.register(tpath)
+            is_def = TM.load_registry()["default"] == e["name"]
+            print(f"[build_pptx] 템플릿 등록: '{e['name']}'" + (" (기본 템플릿)" if is_def else "")
+                  + " — 다음부터 이름으로 쓸 수 있습니다(template_registry.py list)")
 
 
 if __name__ == "__main__":

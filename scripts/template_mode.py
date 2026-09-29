@@ -14,6 +14,8 @@
   TemplateDeck           템플릿 사본을 열어 표본 슬라이드를 지우고, 레이아웃 사본의 고정
                          텍스트를 이번 매뉴얼 문구로 바꾼 뒤, 레이아웃으로 새 슬라이드를 만든다.
   leftover_check(pptx)   산출물 전체(슬라이드·레이아웃·마스터)에 템플릿 표본 문구가 남았는지.
+  등록부                 register·resolve_template — 한 번 쓴 템플릿을 이름으로 기억하고 기본
+                         템플릿을 정한다(~/.claude/manual-gen/templates.json, 관리: template_registry.py).
 
 템플릿 원본 파일은 절대 수정하지 않는다 — 읽기만 하고 결과는 다른 경로에 저장한다.
 """
@@ -32,6 +34,7 @@ from pptx.oxml.ns import qn
 
 E = 914400
 STORE_DIR = os.path.join(os.path.expanduser("~"), ".claude", "manual-gen", "templates")
+REGISTRY = os.path.join(os.path.expanduser("~"), ".claude", "manual-gen", "templates.json")
 MANIFEST_VERSION = 2          # 형식이 바뀌면 올린다 — 저장본이 옛 형식이면 자동으로 다시 분석
 NS = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main",
       "p": "http://schemas.openxmlformats.org/presentationml/2006/main"}
@@ -835,6 +838,86 @@ def load_manifest(template_path, refresh=False):
     with open(mp, "w", encoding="utf-8") as f:
         json.dump(m, f, ensure_ascii=False, indent=2)
     return m, True, mp
+
+
+# ---------- 템플릿 등록부 ------------------------------------------------------
+# 한 번 쓴 템플릿(회사·조직 지정 템플릿)을 이름으로 기억해, 다음 실행의 확인 표에 기본값으로
+# 제시한다. 경로가 담기므로 skill 저장소 밖(사용자 폴더)에 둔다. 등록돼 있어도 적용은 매번
+# 사용자 확인을 거친다 — 모르는 사이 서식이 바뀌는 것을 막기 위함(SKILL.md 1-1 의 9).
+
+DEFAULT_REFS = ("", "default", "기본")
+
+
+def load_registry():
+    try:
+        with open(REGISTRY, encoding="utf-8") as f:
+            r = json.load(f)
+    except (OSError, ValueError):
+        r = {}
+    r.setdefault("version", 1)
+    r.setdefault("default", None)
+    r.setdefault("templates", [])
+    return r
+
+
+def save_registry(r):
+    os.makedirs(os.path.dirname(REGISTRY), exist_ok=True)
+    tmp = REGISTRY + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(r, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, REGISTRY)
+
+
+def _same_path(a, b):
+    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+
+
+def register(path, name=None, make_default=False):
+    """템플릿을 등록한다 — 같은 이름이면 경로를 갱신(파일을 옮긴 경우), 같은 경로면 이름을
+    바꾼다. 기본 템플릿이 없으면 이것이 기본이 된다. 반환: (항목, 새로 등록했는지)."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"템플릿 없음: {path}")
+    path = os.path.abspath(path)
+    r = load_registry()
+    name = (name or os.path.splitext(os.path.basename(path))[0]).strip()
+    e = next((t for t in r["templates"] if t["name"] == name), None)
+    if e is None:
+        e = next((t for t in r["templates"] if _same_path(t["path"], path)), None)
+        if e is not None and e["name"] != name:
+            if r["default"] == e["name"]:
+                r["default"] = name
+            e["name"] = name
+    new = e is None
+    if new:
+        e = {"name": name}
+        r["templates"].append(e)
+    e["path"] = path
+    e["sha1"] = file_sha1(path)
+    if make_default or not r["default"]:
+        r["default"] = name
+    save_registry(r)
+    return e, new
+
+
+def is_registered(path):
+    return any(_same_path(t["path"], path) for t in load_registry()["templates"])
+
+
+def resolve_template(ref):
+    """--template 값 → 파일 경로. 있는 파일이면 그대로, 아니면 등록 이름으로 찾는다
+    ('default'·'기본'·빈 값 = 기본 템플릿)."""
+    if ref and os.path.exists(ref):
+        return ref
+    r = load_registry()
+    name = r["default"] if (ref or "").strip() in DEFAULT_REFS else ref.strip()
+    e = next((t for t in r["templates"] if t["name"] == name), None) if name else None
+    if e is None:
+        names = ", ".join(t["name"] for t in r["templates"]) or "없음"
+        raise FileNotFoundError(f"'{ref}' — 파일도 아니고 등록된 템플릿 이름도 아닙니다(등록: {names})")
+    if not os.path.exists(e["path"]):
+        raise FileNotFoundError(f"등록된 템플릿 '{name}' 의 파일이 없습니다: {e['path']} — 옮겼다면 "
+                                f"template_registry.py add <새 경로> --name {name}")
+    return e["path"]
 
 
 def describe(m):

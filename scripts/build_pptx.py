@@ -457,6 +457,49 @@ def sec_visual(sec):
 LINE_H = 0.275  # 설명 항목 줄당 높이(in) — 11.5pt + space_after 6pt
 
 
+def refresh_annotations(doc, draft_dir, shots_dir):
+    """원고가 쓰는 캡처의 배지 합성본(_annotated)을 현재 합성 규칙으로 다시 만든다 — 원본 PNG 와
+    markers.json 이 함께 있는 캡처만. 합성 옵션(배지 배율·색·테두리)은 이전 합성본에 적힌 값을
+    따르고(없으면 기본값), 결과가 같으면 파일을 건드리지 않는다. 합성 규칙(테두리·배지 자리)을
+    고치면 다시 캡처하지 않아도 다음 빌드부터 모든 매뉴얼에 반영되게 하기 위함이다.
+    원본 PNG 에는 캡처 시점 블러가 이미 들어가 있어 다시 합성해도 가린 정보가 드러나지 않는다.
+    반환: (다시 합성한 수, 대상 수, 경고 목록)."""
+    try:
+        import annotate_screenshot as AN
+        import PIL  # noqa: F401
+    except ImportError:
+        return 0, 0, []
+    seen, done, total, warns = set(), 0, 0, []
+    for ch in doc["chapters"]:
+        for sec in ch["sections"]:
+            for b in sec["blocks"]:
+                if b.get("type") != "image":
+                    continue
+                path = resolve_image(b["src"], draft_dir, shots_dir)
+                if not path:
+                    continue
+                stem, ext = os.path.splitext(path)
+                base = stem[:-len("_annotated")] if stem.endswith("_annotated") else stem
+                orig, mj, out = base + ext, base + ".markers.json", base + "_annotated" + ext
+                key = os.path.normcase(os.path.abspath(out))
+                if key in seen or not (os.path.exists(orig) and os.path.exists(mj)):
+                    continue
+                seen.add(key)
+                total += 1
+                meta = AN.read_meta(out) or {}
+                local = []
+                try:
+                    res = AN.annotate(orig, mj, out=out, scale=meta.get("scale"), color=meta.get("color"),
+                                      box=meta.get("box"), warn=local.append)
+                except AN.AnnotateError as e:
+                    warns.append(f"{os.path.basename(orig)} 배지 합성본을 갱신하지 못해 기존 것을 씁니다 — {e}")
+                    continue
+                done += 1 if res["changed"] else 0
+                warns.extend(f"{os.path.basename(orig)} — {w}" for w in local
+                             if "보이지 않아" in w or "마땅치 않아" in w)
+    return done, total, warns
+
+
 def _load_badge_positions(img_path):
     """이미지에 대응하는 markers.json 에서 배지별 세로 위치를 읽는다.
 
@@ -465,6 +508,14 @@ def _load_badge_positions(img_path):
     돌려주면 미발견(found=false) 배지가 섞였을 때 원고 항목과 한 칸씩 밀려 엉뚱한
     밴드로 배분된다. 원고 마커(①=1, '1.'=1)와 번호로 조인해야 안전하다."""
     import json
+    try:
+        import annotate_screenshot as AN
+        meta = AN.read_meta(img_path)
+        if meta and meta.get("badges"):
+            # 합성본에 적힌 실제 배지 자리 — 배지가 요소 옆·아래 모서리로 옮겨진 경우까지 정확하다
+            return {int(n): float(c[1]) for n, c in meta["badges"].items()}
+    except Exception:
+        pass
     stem = os.path.splitext(img_path)[0]
     cands = []
     if stem.endswith("_annotated"):     # resolve_image 는 _annotated 를 우선 반환
@@ -1927,6 +1978,9 @@ def main():
                          "확인(겹치면 safe 로 자동 재생성, PowerPoint 가 없으면 safe) / safe = 넉넉한 "
                          "추정(겹침 없음 대신 표 쪽 아래에 여백이 남는다)")
     ap.add_argument("--skip-validate", action="store_true", help="원고 사전 검증을 건너뛴다")
+    ap.add_argument("--keep-annotated", action="store_true",
+                    help="배지 합성본을 다시 만들지 않는다(기본: 원본 캡처 + markers.json 이 있으면 빌드 때 "
+                         "현재 합성 규칙으로 다시 합성 — 손으로 고친 합성본을 지킬 때만 쓴다)")
     args = ap.parse_args()
 
     apply_orientation(args.orientation == "portrait")
@@ -1989,6 +2043,14 @@ def main():
     doc = parse_draft(args.draft)
     if not doc["chapters"]:
         fail("장(## NN. 제목)을 찾지 못했습니다 — manual-template.md 규약을 확인하세요")
+
+    if not args.keep_annotated:
+        done, total, ann_warns = refresh_annotations(doc, draft_dir, shots_dir)
+        if total:
+            print(f"[build_pptx] 배지 합성: 캡처 {total}장 중 {done}장을 현재 합성 규칙으로 다시 합성"
+                  + ("" if done else "(모두 최신)"))
+        for w in ann_warns:
+            print(f"[build_pptx] 경고: {w}", file=sys.stderr)
 
     # 원고 사전 검증 게이트 — 잘못된 입력이 결정론적 빌더를 통과해
     # 잘못된 구조로 산출되는 것을 생성 전에 막는다

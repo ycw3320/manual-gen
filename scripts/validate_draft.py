@@ -40,7 +40,8 @@ LABEL_RE = re.compile(r"\[([^\[\]\n]+)\]")
 
 
 def _badge_count(img_path):
-    """이미지에 대응하는 markers.json 의 배지 개수(found=true). 없으면 None."""
+    """이미지에 대응하는 markers.json 의 배지 개수(found=true 이고 화면에 보이는 것 — vis 가 null 인
+    요소는 합성에서 빠진다). 없으면 None."""
     import json
     stem = os.path.splitext(img_path)[0]
     if stem.endswith("_annotated"):
@@ -50,7 +51,8 @@ def _badge_count(img_path):
         return None
     try:
         with open(mp, encoding="utf-8") as f:
-            return sum(1 for m in json.load(f).get("markers", []) if m.get("found"))
+            return sum(1 for m in json.load(f).get("markers", [])
+                       if m.get("found") and not ("vis" in m and m["vis"] is None))
     except (OSError, ValueError, TypeError):
         return None
 

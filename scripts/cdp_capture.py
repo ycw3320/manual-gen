@@ -7,9 +7,10 @@
     판정은 "안정화된 최종 URL의 경로(path)가 로그인 세그먼트 패턴과 매치"로 수행한다
     (/security/author/ 같은 부분문자열 오탐을 막기 위해 경로 세그먼트 경계로만 매치.
     보이는 password 입력란 단독 판정은 API 키 입력란 등에서 오탐하므로 쓰지 않는다)
-  - 배지 좌표 자동 산출(--mark): CSS 셀렉터별 위치를 상대 좌표로 계산해
-    <out>.markers.json 저장(대상 이미지·좌표계 치수·DPR 메타 포함)
-    → annotate_screenshot.py --markers-file 입력으로 사용
+  - 배지 좌표 자동 산출(--mark): CSS 셀렉터별 요소 영역(el)과 화면에 실제로 보이는 영역(vis —
+    스크롤 영역 밖·고정 머리띠/바닥글에 가린 부분을 잘라 낸 것)을 상대 좌표로 계산해
+    <out>.markers.json 저장(대상 이미지·좌표계 치수·DPR 메타 포함). 애니메이션을 멈춘 뒤 잰다
+    → annotate_screenshot.py --markers-file 입력으로 사용(테두리·배지 자리는 합성 단계가 정한다)
   - PII 블러(--redact-file/--redact-email): 캡처 직전 매칭 텍스트·이미지·폼 입력값
     (input/textarea/select)에 blur 적용. 가릴 문자열은 파일로만 받는다 —
     CLI 인자로 받으면 셸 기록에 PII가 남기 때문이다
@@ -258,47 +259,103 @@ def masked_body_text(page, terms, allow, email: bool) -> str:
     return text
 
 
-def compute_markers(page, selectors, full_page: bool):
-    """셀렉터별 배지 좌표와 요소 영역(0~1 상대)을 산출한다.
+_MEASURE_JS = """({sels, full}) => {
+  const doc = document.documentElement;
+  const fullW = Math.max(doc.scrollWidth, doc.clientWidth);
+  const fullH = Math.max(doc.scrollHeight, doc.clientHeight);
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const sx = window.scrollX, sy = window.scrollY;
+  // 스크롤 영역(overflow 가 visible 이 아닌 조상) 밖으로 나간 부분을 잘라 낸다
+  const clipOf = (el, r) => {
+    let l = r.left, t = r.top, rt = r.right, b = r.bottom;
+    for (let a = el.parentElement; a && a !== doc && a !== document.body; a = a.parentElement) {
+      const cs = getComputedStyle(a);
+      const cx = cs.overflowX !== 'visible', cy = cs.overflowY !== 'visible';
+      if (cx || cy) {
+        const ar = a.getBoundingClientRect();
+        const il = ar.left + a.clientLeft, it = ar.top + a.clientTop;
+        if (cx) { l = Math.max(l, il); rt = Math.min(rt, il + a.clientWidth); }
+        if (cy) { t = Math.max(t, it); b = Math.min(b, it + a.clientHeight); }
+      }
+      if (cs.position === 'fixed') break;
+    }
+    return {l, t, r: rt, b};
+  };
+  // 위·아래(또는 왼쪽·오른쪽)에 고정된 머리띠·바닥글(position fixed·sticky)에 가린 띠를 잘라 낸다
+  const occlude = (el, v) => {
+    const seen = new Set();
+    for (let i = 0; i < 7; i++) for (let j = 0; j < 5; j++) {
+      const x = v.l + (v.r - v.l) * (j + 0.5) / 5, y = v.t + (v.b - v.t) * (i + 0.5) / 7;
+      if (x < 0 || y < 0 || x >= vw || y >= vh) continue;
+      const hit = document.elementFromPoint(x, y);
+      if (!hit || hit === el || el.contains(hit) || hit.contains(el)) continue;
+      for (let a = hit; a && a !== document.body && a !== doc; a = a.parentElement) {
+        const p = getComputedStyle(a).position;
+        if (p === 'fixed' || p === 'sticky') { if (!a.contains(el)) seen.add(a); break; }
+      }
+    }
+    for (const o of seen) {
+      const q = o.getBoundingClientRect();
+      const ow = Math.min(v.r, q.right) - Math.max(v.l, q.left);
+      const oh = Math.min(v.b, q.bottom) - Math.max(v.t, q.top);
+      if (ow <= 0 || oh <= 0) continue;
+      if (ow >= (v.r - v.l) * 0.6) {
+        if (q.top <= v.t + 1) v.t = Math.max(v.t, q.bottom);
+        else if (q.bottom >= v.b - 1) v.b = Math.min(v.b, q.top);
+      } else if (oh >= (v.b - v.t) * 0.6) {
+        if (q.left <= v.l + 1) v.l = Math.max(v.l, q.right);
+        else if (q.right >= v.r - 1) v.r = Math.min(v.r, q.left);
+      }
+    }
+    return v;
+  };
+  return { fullW, fullH, vw, vh, dpr: window.devicePixelRatio || 1,
+    items: sels.map((sel, i) => {
+      const el = document.querySelector(sel);
+      if (!el) return { n: i + 1, selector: sel, found: false };
+      const r = el.getBoundingClientRect();
+      let v = clipOf(el, r);
+      if (!full) {
+        v = {l: Math.max(v.l, 0), t: Math.max(v.t, 0), r: Math.min(v.r, vw), b: Math.min(v.b, vh)};
+        if (v.r - v.l >= 2 && v.b - v.t >= 2) v = occlude(el, v);
+      }
+      const visible = r.width > 0 && r.height > 0 && v.r - v.l >= 2 && v.b - v.t >= 2;
+      const ox = full ? sx : 0, oy = full ? sy : 0;
+      const W = full ? fullW : vw, H = full ? fullH : vh;
+      return { n: i + 1, selector: sel, found: true, tag: el.tagName.toLowerCase(),
+        el: [(r.left + ox) / W, (r.top + oy) / H, r.width / W, r.height / H],
+        vis: visible ? [(v.l + ox) / W, (v.t + oy) / H, (v.r - v.l) / W, (v.b - v.t) / H] : null };
+    }) };
+}"""
 
-    x,y = 요소 좌상단(배지 위치), w,h = 요소 크기(강조 테두리 박스용).
-    반환: (markers, frame) — frame 은 좌표계의 CSS px 치수와 DPR.
-    annotate 단계가 대상 이미지 치수와 대조해 stale/오페어링을 잡는 근거가 된다.
+
+def compute_markers(page, selectors, full_page: bool):
+    """셀렉터별 요소 영역(0~1 상대)을 산출한다.
+
+    el  = 요소 전체 영역(측정 원본 — 다른 도구가 x·y·w·h 를 고쳐도 남는다)
+    vis = 화면에 실제로 보이는 영역 — 스크롤 영역 밖·화면 밖·위아래에 고정된 머리띠/바닥글에 가린
+          부분을 잘라 낸 것. 보이지 않으면 null(합성에서 빠진다)
+    tag = 요소 이름(input·select 등) — 합성 때 입력칸은 보이는 내용 크기로 줄이지 않는다
+    x,y,w,h = vis(없으면 el)를 이미지 안으로 자른 값 — 구버전 도구와의 호환용
+    반환: (markers, frame) — frame 은 좌표계의 CSS px 치수와 DPR. annotate 단계가 대상 이미지
+    치수와 대조해 stale/오페어링을 잡는 근거가 된다.
     """
-    data = page.evaluate(
-        """(sels) => {
-          const doc = document.documentElement;
-          const fullW = Math.max(doc.scrollWidth, doc.clientWidth);
-          const fullH = Math.max(doc.scrollHeight, doc.clientHeight);
-          const vw = window.innerWidth, vh = window.innerHeight;
-          const sx = window.scrollX, sy = window.scrollY;
-          return { fullW, fullH, vw, vh, dpr: window.devicePixelRatio || 1,
-            items: sels.map((sel, i) => {
-            const el = document.querySelector(sel);
-            if (!el) return { n: i + 1, selector: sel, found: false };
-            const r = el.getBoundingClientRect();
-            return { n: i + 1, selector: sel, found: true,
-              vx: r.left / vw, vy: r.top / vh, vw2: r.width / vw, vh2: r.height / vh,
-              dx: (r.left + sx) / fullW, dy: (r.top + sy) / fullH,
-              dw: r.width / fullW, dh: r.height / fullH };
-          }) };
-        }""",
-        selectors,
-    )
+    data = page.evaluate(_MEASURE_JS, {"sels": selectors, "full": full_page})
+    r4 = lambda v: round(v, 4)
+    clamp = lambda v: min(max(v, 0.0), 1.0)
     markers = []
     for m in data["items"]:
         if not m["found"]:
             markers.append({"n": m["n"], "selector": m["selector"], "found": False})
             continue
-        if full_page:
-            x, y, w, h = m["dx"], m["dy"], m["dw"], m["dh"]
-        else:
-            x, y, w, h = m["vx"], m["vy"], m["vw2"], m["vh2"]
-        clamp = lambda v: round(min(max(v, 0.0), 1.0), 4)
-        markers.append({
-            "n": m["n"], "selector": m["selector"], "found": True,
-            "x": clamp(x), "y": clamp(y), "w": clamp(w), "h": clamp(h),
-        })
+        el = [r4(v) for v in m["el"]]
+        vis = [r4(v) for v in m["vis"]] if m["vis"] else None
+        b = vis or el
+        x0, y0 = clamp(b[0]), clamp(b[1])
+        x1, y1 = clamp(b[0] + b[2]), clamp(b[1] + b[3])
+        mk = {"n": m["n"], "selector": m["selector"], "found": True, "tag": m.get("tag"),
+              "x": r4(x0), "y": r4(y0), "w": r4(x1 - x0), "h": r4(y1 - y0), "el": el, "vis": vis}
+        markers.append(mk)
     if full_page:
         frame = {"w": data["fullW"], "h": data["fullH"], "dpr": data["dpr"]}
     else:
@@ -492,12 +549,17 @@ def main():
             print(f"[cdp_capture] PII 블러 적용: {n}개 요소")
 
         markers = frame = None
-        if args.mark:
-            selectors = [s.strip() for s in args.mark.split(";") if s.strip()]
-            markers, frame = compute_markers(page, selectors, args.full_page)
-            for m in markers:
+        selectors = [s.strip() for s in args.mark.split(";") if s.strip()] if args.mark else None
+
+        def measure():
+            ms, fr = compute_markers(page, selectors, args.full_page)
+            for m in ms:
                 if not m["found"]:
                     print(f"[cdp_capture] 경고: 배지 {m['n']} 셀렉터 미발견 — {m['selector']}", file=sys.stderr)
+                elif m["vis"] is None:
+                    print(f"[cdp_capture] 경고: 배지 {m['n']} 요소가 화면에 보이지 않습니다(화면 밖·스크롤 영역 밖·"
+                          f"고정 머리띠/바닥글에 가림) — 합성에서 빠집니다: {m['selector']}", file=sys.stderr)
+            return ms, fr
 
         def save_markers(mpath):
             with open(mpath, "w", encoding="utf-8") as f:
@@ -507,8 +569,9 @@ def main():
             return sum(1 for m in markers if m["found"])
 
         if args.mark_only:
-            if markers is None:
+            if not selectors:
                 fail("--mark-only 에는 --mark 셀렉터 목록이 필요합니다")
+            markers, frame = measure()
             mpath = os.path.splitext(args.out)[0] + ".markers.json"
             found = save_markers(mpath)
             print(f"[cdp_capture] 배지 좌표만 저장(캡처 생략): {mpath} (산출 {found}/{len(markers)})")
@@ -529,6 +592,10 @@ def main():
                           "} catch(_){} }")
         except Exception:
             pass
+
+        # 배지 좌표는 정지 뒤에 잰다 — 전환·애니메이션 중간 위치로 재면 캡처와 테두리가 어긋난다
+        if selectors:
+            markers, frame = measure()
 
         # raw CDP Page.captureScreenshot — Playwright page.screenshot 의 폰트·애니메이션
         # 안정화 대기를 우회한다. 실시간 대시보드처럼 idle 에 도달하지 못하는 페이지에서도
